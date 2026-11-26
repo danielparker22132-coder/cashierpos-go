@@ -1,0 +1,99 @@
+{{template "chrome-top" .}}
+
+<h1>التقارير</h1>
+<p>
+<a href="/reports/sales">المبيعات</a> | <a href="/reports/profit">الربح</a> | <a href="/reports/debts">الديون</a> |
+<a href="/reports/top-products">أفضل المنتجات</a> | <a href="/reports/low-stock">مخزون منخفض</a> | <a href="/reports/canceled">فواتير ملغاة</a> |
+<a href="/reports/payments">طرق الدفع والدرج</a> | <a href="/reports/customer">تقرير عميل</a> |
+<a href="/reports/profit-analysis">تحليل الربح</a> | <a href="/reports/returns">تحليل المرتجعات</a> |
+<a href="/dashboard">لوحة المدير</a> | <a href="/shifts/monitor">مراقب الشيفتات</a>
+</p>
+{{if eq .Data.Kind "index"}}
+<p>اختر تقريراً من القائمة أعلاه. كل التقارير بنطاق تاريخ (بداية ≤ نهاية)</p>
+{{end}}
+{{if ne .Data.Kind "index"}}
+<form method="get" class="form" style="max-width:700px">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+<label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+{{if eq .Data.Kind "customer"}}<label>معرّف العميل <input name="customer_id" value="{{if .Data.Customer}}{{.Data.Customer.CustomerID}}{{end}}"></label>{{end}}
+{{if or (eq .Data.Kind "profit") (eq .Data.Kind "profit-analysis")}}<label>نوع البيع <input name="sale_type" placeholder="retail / wholesale (فارغ = الكل)"></label>{{end}}
+<button type="submit">عرض</button>
+<a href="/reports/export?kind={{.Data.Kind}}&from={{.Data.From}}&to={{.Data.To}}">{{template "icon-upload"}} تصدير CSV</a>
+</div></form>
+{{end}}
+
+{{if eq .Data.Kind "sales"}}{{with .Data.Sales}}
+<h2>تقرير المبيعات ({{.From}} — {{.To}})</h2>
+<p>عدد الفواتير: {{.InvoiceCount}} | إجمالي المبيعات: {{egp .TotalSales}} | الخصومات: {{egp .TotalDiscount}} | الصافي: {{egp .TotalNet}} | المدفوع: {{egp .TotalPaid}} | المتبقي: {{egp .TotalRemaining}} | الربح: {{egp .TotalProfit}}</p>
+{{if .ByDay}}<h3>حسب اليوم</h3><table><tr><th>اليوم</th><th>عدد الفواتير</th><th>الإجمالي</th></tr>
+{{range .ByDay}}<tr><td>{{.Day}}</td><td>{{.InvoiceCount}}</td><td class="num">{{egp .Total}}</td></tr>{{end}}</table>{{end}}
+{{if .ByPayment}}<h3>حسب طريقة الدفع</h3><table><tr><th>الطريقة</th><th>العدد</th><th>الإجمالي</th></tr>
+{{range .ByPayment}}<tr><td>{{.Method}}</td><td>{{.Count}}</td><td class="num">{{egp .Total}}</td></tr>{{end}}</table>{{end}}
+{{end}}{{end}}
+
+{{if or (eq .Data.Kind "profit") (eq .Data.Kind "profit-analysis")}}{{with .Data.Profit}}
+<h2>تحليل الربح ({{.From}} — {{.To}})</h2>
+<p>إجمالي المبيعات: {{egp .TotalSales}} | التكلفة: {{egp .TotalCost}} | الربح: {{egp .TotalProfit}}</p>
+{{if .BySaleType}}<h3>حسب نوع البيع</h3><table><tr><th>النوع</th><th>عدد الفواتير</th><th>المبيعات</th><th>الربح</th></tr>
+{{range .BySaleType}}<tr><td>{{.SaleType}}</td><td>{{.InvoiceCount}}</td><td class="num">{{egp .TotalSales}}</td><td class="num">{{egp .TotalProfit}}</td></tr>{{end}}</table>{{end}}
+{{if .Top10}}<h3>أفضل 10 منتجات ربحاً</h3><table><tr><th>المنتج</th><th>الكمية</th><th>المبيعات</th><th>الربح</th></tr>
+{{range .Top10}}<tr><td>{{.ProductName}}</td><td class="num">{{qty .QtySold}}</td><td class="num">{{egp .TotalSales}}</td><td class="num">{{egp .TotalProfit}}</td></tr>{{end}}</table>{{end}}
+{{if .Bottom10}}<h3>أسوأ 10 منتجات ربحاً</h3><table><tr><th>المنتج</th><th>الكمية</th><th>المبيعات</th><th>الربح</th></tr>
+{{range .Bottom10}}<tr><td>{{.ProductName}}</td><td class="num">{{qty .QtySold}}</td><td class="num">{{egp .TotalSales}}</td><td class="num">{{egp .TotalProfit}}</td></tr>{{end}}</table>{{end}}
+{{end}}{{end}}
+
+{{if eq .Data.Kind "debts"}}
+<h2>تقرير الديون — الإجمالي: {{egp .Data.DebtTotal}}</h2>
+{{if .Data.Debts}}<table><tr><th>العميل</th><th>الهاتف</th><th>عدد الفواتير</th><th>الرصيد</th></tr>
+{{range .Data.Debts}}<tr><td>{{.CustomerName}}</td><td>{{.Phone}}</td><td>{{.InvoiceCount}}</td><td class="num">{{egp .Balance}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد ديون مستحقة</p>{{end}}
+{{end}}
+
+{{if eq .Data.Kind "top-products"}}
+<h2>أفضل المنتجات</h2>
+{{if .Data.Top}}<table><tr><th>المنتج</th><th>الكمية</th><th>الإيراد</th><th>الربح</th></tr>
+{{range .Data.Top}}<tr><td>{{.ProductName}}</td><td class="num">{{qty .Qty}}</td><td class="num">{{egp .Revenue}}</td><td class="num">{{egp .Profit}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد بيانات خلال الفترة المحددة</p>{{end}}
+{{end}}
+
+{{if eq .Data.Kind "low-stock"}}
+<h2>منتجات المخزون المنخفض</h2>
+{{if .Data.Low}}<table><tr><th>المنتج</th><th>الباركود</th><th>الكمية</th><th>الحد الأدنى</th></tr>
+{{range .Data.Low}}<tr><td>{{.ProductName}}</td><td>{{.Barcode}}</td><td class="num">{{qty .Quantity}}</td><td class="num">{{qty .MinQuantity}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد منتجات عند الحد الأدنى أو دونه</p>{{end}}
+{{end}}
+
+{{if eq .Data.Kind "canceled"}}
+<h2>الفواتير الملغاة</h2>
+{{if .Data.Canceled}}<table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الكاشير</th><th>الصافي</th><th>ألغاها</th><th>السبب</th></tr>
+{{range .Data.Canceled}}<tr><td>{{.InvoiceNumber}}</td><td>{{.InvoiceDate}}</td><td>{{.UserName}}</td><td class="num">{{egp .NetAmount}}</td><td>{{.CanceledBy}}</td><td>{{.CancelReason}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد فواتير ملغاة في الفترة</p>{{end}}
+{{end}}
+
+{{if eq .Data.Kind "payments"}}{{with .Data.Payment}}
+<h2>تقرير طرق الدفع والدرج ({{.From}} — {{.To}})</h2>
+{{if .ByMethod}}<table><tr><th>طريقة الدفع</th><th>عدد الفواتير</th><th>الإجمالي</th></tr>
+{{range .ByMethod}}<tr><td>{{.Method}}</td><td>{{.Count}}</td><td class="num">{{egp .Total}}</td></tr>{{end}}</table>{{end}}
+<p>وارد الدرج: {{egp .CashIn}} | صادر الدرج: {{egp .CashOut}} | المصروفات: {{egp .Expenses}} | المرتجعات: {{egp .Returns}}</p>
+{{end}}{{end}}
+
+{{if eq .Data.Kind "customer"}}{{with .Data.Customer}}
+<h2>تقرير عميل: {{.CustomerName}} ({{.Phone}})</h2>
+<p>الرصيد الحي: {{egp .Balance}} | حد الائتمان: {{egp .CreditLimit}} | فواتير الفترة: {{.InvoiceCount}} | مبيعات الفترة: {{egp .TotalSales}} | مدفوعات الفترة: {{egp .TotalPaid}}</p>
+{{if .Invoices}}<h3>الفواتير</h3><table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>ملغاة</th></tr>
+{{range .Invoices}}<tr><td><a href="/sales/{{.InvoiceID}}">{{.InvoiceNumber}}</a></td><td>{{.InvoiceDate}}</td><td class="num">{{egp .NetAmount}}</td><td class="num">{{egp .PaidAmount}}</td><td class="num">{{egp .Remaining}}</td><td>{{if .Canceled}}نعم{{else}}لا{{end}}</td></tr>{{end}}</table>{{end}}
+{{if .Payments}}<h3>المدفوعات</h3><table><tr><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>استلمها</th></tr>
+{{range .Payments}}<tr><td>{{.PaymentDate}}</td><td class="num">{{egp .Amount}}</td><td>{{.Method}}</td><td>{{.ReceivedBy}}</td></tr>{{end}}</table>{{end}}
+{{else}}<p>أدخل معرّف العميل في النموذج أعلاه لعرض تقريره</p>{{end}}{{end}}
+
+{{if eq .Data.Kind "returns"}}{{with .Data.Returns}}
+<h2>تحليل المرتجعات ({{.From}} — {{.To}})</h2>
+<p>عدد المرتجعات: {{.Count}} | إجمالي المرتجع: {{egp .TotalValue}} | الربح المفقود: {{egp .LostProfit}}</p>
+{{if .ByProduct}}<h3>حسب المنتج</h3><table><tr><th>المنتج</th><th>العدد</th><th>الكمية</th><th>سعر الوحدة</th><th>القيمة</th><th>الربح المفقود</th></tr>
+{{range .ByProduct}}<tr><td>{{.ProductName}}</td><td>{{.Count}}</td><td class="num">{{qty .Qty}}</td><td class="num">{{if avgApprox .TotalValue .Qty}}≈{{end}}{{egp (avgUnit .TotalValue .Qty)}}</td><td class="num">{{egp .TotalValue}}</td><td class="num">{{egp .LostProfit}}</td></tr>{{end}}</table>{{end}}
+{{if .ByUser}}<h3>حسب المستخدم</h3><table><tr><th>المستخدم</th><th>العدد</th><th>القيمة</th><th>الربح المفقود</th></tr>
+{{range .ByUser}}<tr><td>{{.UserName}}</td><td>{{.Count}}</td><td class="num">{{egp .TotalValue}}</td><td class="num">{{egp .LostProfit}}</td></tr>{{end}}</table>{{end}}
+{{end}}{{end}}
+
+{{template "chrome-bottom" .}}

@@ -1,0 +1,61 @@
+{{template "chrome-top" .}}
+<h1>سجل اعتماد العدّات</h1>
+<p class="hint">قرارات اعتماد ورفض عدّات الدرج — الأحدث أولاً. للمدير فقط</p>
+
+<form method="get" action="/cashcount-approvals" class="form inline">
+  <label>عرض حسب:
+    <select name="mode" id="log-mode">
+      <option value="day" {{if eq .Data.Mode "day"}}selected{{end}}>يوم</option>
+      <option value="month" {{if eq .Data.Mode "month"}}selected{{end}}>شهر</option>
+      <option value="custom" {{if eq .Data.Mode "custom"}}selected{{end}}>فترة مخصصة</option>
+    </select>
+  </label>
+  <span id="f-day"><label>اليوم: <input type="date" name="day" value="{{.Data.Day}}"></label></span>
+  <span id="f-month"><label>الشهر:
+    <select name="month">
+      {{range .Data.Months}}<option value="{{.Value}}" {{if eq .Value $.Data.Month}}selected{{end}}>{{.Label}}</option>{{end}}
+    </select>
+  </label></span>
+  <span id="f-custom"><label>من: <input type="date" name="from" value="{{.Data.From}}"></label>
+  <label>إلى: <input type="date" name="to" value="{{.Data.To}}"></label></span>
+  <button type="submit" class="btn">عرض</button>
+  <a class="btn" href="/cashcount-approvals?mode={{.Data.Mode}}&amp;day={{.Data.Day}}&amp;month={{.Data.Month}}&amp;from={{.Data.From}}&amp;to={{.Data.To}}&amp;format=csv">تصدير CSV</a>
+</form>
+<script>
+(function () {
+  var sel = document.getElementById('log-mode');
+  function show() {
+    var m = sel.value;
+    document.getElementById('f-day').style.display = m === 'day' ? '' : 'none';
+    document.getElementById('f-month').style.display = m === 'month' ? '' : 'none';
+    document.getElementById('f-custom').style.display = m === 'custom' ? '' : 'none';
+  }
+  sel.addEventListener('change', show);
+  show();
+})();
+</script>
+
+{{if .Data.Reviews}}
+<table>
+  <thead><tr><th>الوقت</th><th>الكاشير</th><th>المعتمد</th><th>الشيفت</th><th>المتوقع</th><th>المعدود</th><th>الفرق</th><th>القرار</th></tr></thead>
+  <tbody>
+  {{range .Data.Reviews}}
+    <tr>
+      <td>{{.ReviewedAt}}</td>
+      <td>{{.Owner}}</td>
+      <td>{{.Approver}}</td>
+      <td>{{.ShiftID}}</td>
+      <td class="num">{{egp .Expected}}</td>
+      <td class="num">{{egp .Counted}}</td>
+      <td class="num">{{egp .Difference}}</td>
+      <td>{{if eq .Decision "approved"}}معتمد{{else}}مرفوض{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+<p>القرارات: {{len .Data.Reviews}}</p>
+{{else}}
+<p>لا توجد قرارات اعتماد في هذه الفترة</p>
+{{end}}
+<p><a class="btn" href="/shifts">رجوع للشيفت والدرج</a></p>
+{{template "chrome-bottom" .}}

@@ -1,0 +1,39 @@
+{{template "chrome-top" .}}
+
+<h1>لوحة المدير</h1>
+<p>مبيعات اليوم: {{egp .Data.TodaySales}} | فواتير اليوم: {{.Data.TodayInvoices}} | ملغاة اليوم: {{.Data.TodayCanceled}} |
+شيفتات مفتوحة: {{.Data.OpenShifts}} | منتجات مخزون منخفض: {{.Data.LowStockCount}} | إجمالي الديون: {{egp .Data.TotalDebts}} |
+تنبيهات تدقيق غير مقروءة: {{.Data.UnreadAudit}} | تنبيهاتي غير المقروءة: {{.Data.UnreadNotif}}</p>
+
+<h2>أحدث الفواتير</h2>
+{{if .Data.RecentInvoices}}<table><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الكاشير</th><th>العميل</th><th>الصافي</th><th>ملغاة</th></tr>
+{{range .Data.RecentInvoices}}<tr><td>{{.InvoiceNumber}}</td><td>{{.InvoiceDate}}</td><td>{{.UserName}}</td><td>{{.CustomerName}}</td><td class="num">{{egp .NetAmount}}</td><td>{{if .Canceled}}نعم{{else}}لا{{end}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد فواتير</p>{{end}}
+
+<h2>مخزون منخفض</h2>
+{{if .Data.LowStock}}<table><tr><th>المنتج</th><th>الكمية</th><th>الحد الأدنى</th></tr>
+{{range .Data.LowStock}}<tr><td>{{.ProductName}}</td><td class="num">{{qty .Quantity}}</td><td class="num">{{qty .MinQuantity}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد منتجات منخفضة</p>{{end}}
+
+<h2>أكبر الديون</h2>
+{{if .Data.TopDebts}}<table><tr><th>العميل</th><th>الرصيد</th></tr>
+{{range .Data.TopDebts}}<tr><td>{{.CustomerName}}</td><td class="num">{{egp .Balance}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد ديون</p>{{end}}
+
+<h2>الشيفتات المفتوحة</h2>
+{{if .Data.Shifts}}<table><tr><th>الكاشير</th><th>التاريخ</th><th>وقت الفتح</th><th>رصيد الفتح</th><th>الدرج المتوقع</th></tr>
+{{range .Data.Shifts}}<tr><td>{{.UserName}}</td><td>{{.ShiftDate}}</td><td>{{.OpenTime}}</td><td class="num">{{egp .OpeningBalance}}</td><td class="num">{{egp .ExpectedDrawer}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد شيفتات مفتوحة</p>{{end}}
+
+<h2>ديون الموردين</h2>
+{{if .Data.VendorDebts}}<table><tr><th>المورد</th><th>الرصيد</th></tr>
+{{range .Data.VendorDebts}}<tr><td>{{.VendorName}}</td><td class="num">{{egp .Balance}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد أرصدة موردين</p>{{end}}
+
+<h2>أحدث سجل التدقيق</h2>
+{{if .Data.RecentAudit}}<table><tr><th>التاريخ</th><th>المستخدم</th><th>الإجراء</th><th>ملاحظات</th></tr>
+{{range .Data.RecentAudit}}<tr><td>{{.LogDate}}</td><td>{{.UserName}}</td><td>{{.ActionType}}</td><td>{{.Notes}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد سجلات</p>{{end}}
+<p><a href="/audit">سجل التدقيق الكامل</a></p>
+
+{{template "chrome-bottom" .}}

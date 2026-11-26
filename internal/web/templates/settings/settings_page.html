@@ -1,0 +1,92 @@
+{{template "chrome-top" .}}
+
+<h1>الإعدادات</h1>
+
+<h2>ملف المحل</h2>
+<form method="post" action="/settings/profile" class="form">
+<label>اسم المحل <input name="store_name" value="{{.Data.Profile.Name}}" required></label>
+<label>الهاتف <input name="store_phone" value="{{.Data.Profile.Phone}}" dir="ltr"></label>
+<label>العنوان <input name="store_address" value="{{.Data.Profile.Address}}"></label>
+<button type="submit" class="btn-primary">حفظ ملف المحل</button>
+</form>
+
+<h2>إعدادات عامة</h2>
+<form method="post" action="/settings/general" class="form">
+<label>مهلة القفل التلقائي (دقيقة — 0 = معطل) <input type="number" name="auto_lock_minutes" value="{{.Data.AutoLock}}" min="0" max="600"></label>
+<p class="hint"><a href="/lock/settings">إعدادات القفل التلقائي</a> — مهلة عامة ومهلة لكل مستخدم على حدة</p>
+<label><input type="checkbox" name="dark_mode" value="1"{{if .Data.DarkMode}} checked{{end}}> الوضع الداكن (يُطبَّق فوراً)</label>
+<button type="submit" class="btn-primary">حفظ الإعدادات العامة</button>
+</form>
+
+<h2>مناطق التوصيل</h2>
+<p class="hint">منطقة «ناجي حمادي» برسوم 0 ومفعّلة دائماً — لا تُعاد إلى 20 أبداً. الرسوم بالجنيه (مثال 15 أو 15.50)</p>
+<form method="post" action="/settings/zones" class="form" style="max-width:700px">
+{{range $i, $z := .Data.Zones}}
+<div style="display:flex;gap:8px;align-items:center">
+<input name="zone_name" value="{{$z.Name}}" placeholder="اسم المنطقة" required>
+<input name="zone_fee" value="{{egp $z.Fee}}" placeholder="الرسوم" dir="ltr">
+<label><input type="checkbox" name="zone_active" value="{{$i}}"{{if $z.Active}} checked{{end}}> مفعّلة</label>
+</div>
+{{end}}
+<div style="display:flex;gap:8px;align-items:center">
+<input name="zone_name" value="" placeholder="منطقة جديدة">
+<input name="zone_fee" value="0.00 ج.م" placeholder="الرسوم" dir="ltr">
+<label><input type="checkbox" name="zone_active" value="{{len .Data.Zones}}"> مفعّلة</label>
+</div>
+<button type="submit" class="btn-primary">حفظ مناطق التوصيل</button>
+</form>
+
+<h2>إعدادات الميزان</h2>
+<form method="post" action="/settings/scale" class="form">
+<label><input type="checkbox" name="is_enabled" value="1"{{if .Data.Scale.IsEnabled}} checked{{end}}> مفعّل</label>
+<label>بادئة الباركود (أرقام فقط) <input name="barcode_prefix" value="{{.Data.Scale.Prefix}}" dir="ltr"></label>
+<label>طول كود المنتج (1-8) <input type="number" name="product_code_length" value="{{.Data.Scale.ProductCodeLength}}" min="1" max="8"></label>
+<label>طول القيمة (1-8) <input type="number" name="value_length" value="{{.Data.Scale.ValueLength}}" min="1" max="8"></label>
+<label>وضع الباركود <select name="barcode_mode">
+<option value="WeightEmbedded"{{if eq .Data.Scale.Mode "WeightEmbedded"}} selected{{end}}>وزن مضمَّن</option>
+<option value="PriceEmbedded"{{if eq .Data.Scale.Mode "PriceEmbedded"}} selected{{end}}>سعر مضمَّن</option>
+</select></label>
+<label><input type="checkbox" name="has_check_digit" value="1"{{if .Data.Scale.HasCheckDigit}} checked{{end}}> يوجد رقم تحقق</label>
+<label>وحدة الوزن <select name="weight_unit">
+<option value="Kilogram"{{if eq .Data.Scale.WeightUnit "Kilogram"}} selected{{end}}>كيلوجرام</option>
+<option value="Gram"{{if eq .Data.Scale.WeightUnit "Gram"}} selected{{end}}>جرام</option>
+</select></label>
+<label>الخانات العشرية للقيمة (0-5) <input type="number" name="value_decimal_places" value="{{.Data.Scale.ValueDecimalPlaces}}" min="0" max="5"></label>
+<label>ملاحظات <input name="notes" value="{{.Data.Scale.Notes}}"></label>
+<button type="submit" class="btn-primary">حفظ إعدادات الميزان</button>
+</form>
+
+<h3>مختبِر باركود ميزان</h3>
+<form method="post" action="/settings/scale/test" class="form">
+<label>الباركود <input name="barcode" dir="ltr" required></label>
+<button type="submit">اختبار</button>
+</form>
+{{if .Data.ScaleTest}}<p>النتيجة: كود المنتج {{.Data.ScaleTest.PLU}} — المنتج: {{.Data.ScaleTest.ProductName}} — الوزن: {{qty .Data.ScaleTest.Weight}} كجم — السعر: {{egp .Data.ScaleTest.TotalPrice}} — الوضع: {{.Data.ScaleTest.Mode}}</p>{{end}}
+{{if .Data.ScaleTestErr}}<p class="alert err">{{.Data.ScaleTestErr}}</p>{{end}}
+
+<h2>النسخ السحابي (مجلد متزامن — بلا OAuth وبلا شبكة)</h2>
+<form method="post" action="/settings/cloud" class="form">
+<label><input type="checkbox" name="cloud_backup_enabled" value="1"{{if .Data.Cloud.Enabled}} checked{{end}}> مفعّل</label>
+<label>مجلد النسخ السحابي (Google Drive / OneDrive / Dropbox) <input name="cloud_backup_dir" value="{{.Data.Cloud.Dir}}" dir="ltr"></label>
+<label>وقت النسخة اليومية (HH:MM — تفضيل محفوظ فقط؛ النسخة تعمل عند أول تشغيل في اليوم) <input name="cloud_backup_time" value="{{.Data.Cloud.Time}}" dir="ltr"></label>
+<label>الاحتفاظ بآخر N نسخة <input type="number" name="cloud_backup_keep" value="{{.Data.Cloud.Keep}}" min="1" max="100"></label>
+<button type="submit" class="btn-primary">حفظ إعدادات النسخ السحابي</button>
+</form>
+<p class="hint">آخر نسخة سحابية ناجحة: {{.Data.Cloud.Last}} — الحجم: {{.Data.Cloud.LastSize}} بايت — الحالة: {{.Data.Cloud.LastStatus}}</p>
+
+<h2>عتبات المراقبة الذكية</h2>
+<form method="post" action="/settings/monitor" class="form">
+<label>عتبة مبلغ الإلغاء (0 = معطلة) <input name="alert_threshold_cancel_amount" value="{{egp .Data.Thresholds.CancelAmount}}" dir="ltr"></label>
+<label>عتبة نسبة الخصم % (0 = معطلة) <input type="number" name="alert_threshold_discount_pct" value="{{.Data.Thresholds.DiscountPct}}" min="0" max="100"></label>
+<label>عتبة مبلغ المرتجع (0 = معطلة) <input name="alert_threshold_return_amount" value="{{egp .Data.Thresholds.ReturnAmount}}" dir="ltr"></label>
+<button type="submit" class="btn-primary">حفظ العتبات</button>
+</form>
+
+<h2>إعادة تعيين قاعدة البيانات</h2>
+<p class="alert err">تحذير: يحذف كل الجداول ويعيد التهيئة (حساب مدير افتراضي + عميل نقدي). تُسجَّل المحاولة في التدقيق قبل الحذف، لكن السجل نفسه يُحذف مع إعادة التعيين. تُمسح الجلسات وستحتاج لتسجيل الدخول مجدداً.</p>
+<form method="post" action="/settings/reset" class="form">
+<label>اكتب «إعادة تعيين» للتأكيد <input name="confirm" required></label>
+<button type="submit" class="btn-primary">إعادة تعيين قاعدة البيانات</button>
+</form>
+
+{{template "chrome-bottom" .}}

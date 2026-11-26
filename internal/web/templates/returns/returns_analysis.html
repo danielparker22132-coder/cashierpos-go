@@ -1,0 +1,35 @@
+{{template "chrome-top" .}}
+<h1>تحليلات المرتجعات</h1>
+<form method="get" action="/returns/analysis" class="form inline">
+  <label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+  <label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+  <button type="submit">عرض</button>
+  <a class="btn" href="/returns/analysis?from={{.Data.From}}&to={{.Data.To}}&format=csv">{{template "icon-upload"}} تصدير CSV</a>
+</form>
+{{if .Data.Report}}
+<p>عدد المرتجعات: <strong>{{.Data.Report.Count}}</strong> — القيمة الإجمالية: <strong>{{egp .Data.Report.TotalValue}}</strong> — الربح المفقود: <strong>{{egp .Data.Report.LostProfit}}</strong></p>
+<h2>حسب المنتج</h2>
+<table>
+  <thead><tr><th>المنتج</th><th>عدد المرتجعات</th><th>الكمية</th><th>سعر الوحدة</th><th>القيمة</th><th>الربح المفقود</th></tr></thead>
+  <tbody>
+  {{range .Data.Report.ByProduct}}
+    <tr><td>{{.ProductName}}</td><td>{{.Count}}</td><td class="num">{{qty .Qty}}</td><td class="num">{{if avgApprox .TotalValue .Qty}}≈{{end}}{{egp (avgUnit .TotalValue .Qty)}}</td><td class="num">{{egp .TotalValue}}</td><td class="num">{{egp .LostProfit}}</td></tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد بيانات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<h2>حسب المستخدم</h2>
+<table>
+  <thead><tr><th>المستخدم</th><th>عدد المرتجعات</th><th>القيمة</th><th>الربح المفقود</th></tr></thead>
+  <tbody>
+  {{range .Data.Report.ByUser}}
+    <tr><td>{{.UserName}}</td><td>{{.Count}}</td><td class="num">{{egp .TotalValue}}</td><td class="num">{{egp .LostProfit}}</td></tr>
+  {{else}}
+    <tr><td colspan="4">لا توجد بيانات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+<p><a class="btn" href="/returns">رجوع للمرتجعات</a></p>
+{{template "chrome-bottom" .}}

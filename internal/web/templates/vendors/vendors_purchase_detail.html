@@ -1,0 +1,24 @@
+{{template "chrome-top" .}}
+<h1>فاتورة شراء {{.Data.Purchase.Purchase.InvoiceNo}}</h1>
+<p>المورد: {{.Data.Purchase.Purchase.VendorName}} · التاريخ: <span class="num">{{.Data.Purchase.Purchase.Date}}</span> · بواسطة: {{.Data.Purchase.Purchase.UserName}}</p>
+<p><button onclick="window.print()">{{template "icon-printer"}} طباعة</button> <a href="/vendors/{{.Data.Purchase.Purchase.VendorID}}">عودة للمورد</a></p>
+<table>
+  <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th><th>الإجمالي</th><th>التشغيلة</th><th>الصلاحية</th></tr></thead>
+  <tbody>
+  {{range .Data.Purchase.Lines}}
+    <tr>
+      <td>{{.ProductName}}</td>
+      <td class="num">{{qty .Qty}}</td>
+      <td class="num">{{egp .PurchasePrice}}</td>
+      <td class="num">{{egp .Total}}</td>
+      <td class="num">{{.BatchNumber}}</td>
+      <td class="num">{{.ExpiryDate}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+<p>الإجمالي: <strong class="num">{{egp .Data.Purchase.Purchase.Total}}</strong></p>
+<p>المدفوع: <strong class="num">{{egp .Data.Purchase.Purchase.Paid}}</strong> · المتبقي: <strong class="num">{{egp .Data.Purchase.Purchase.Remaining}}</strong></p>
+<p>طريقة الدفع: {{.Data.Purchase.Purchase.PaymentMethod}} · تاريخ الاستحقاق: <span class="num">{{.Data.Purchase.Purchase.DueDate}}</span></p>
+<p>ملاحظات: {{.Data.Purchase.Purchase.Notes}}</p>
+{{template "chrome-bottom" .}}

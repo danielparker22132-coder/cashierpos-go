@@ -1,0 +1,16 @@
+{{template "chrome-top" .}}
+
+<h1>معاينة تنبيه</h1>
+<h2>{{.Data.Notif.Title}}</h2>
+<p>{{.Data.Notif.Body}}</p>
+<table>
+<tr><th>النوع</th><td>{{if eq .Data.Notif.Type "price_drop"}}انخفاض سعر{{else if eq .Data.Notif.Type "offer"}}عرض{{else if eq .Data.Notif.Type "custom"}}مخصص{{else if eq .Data.Notif.Type "scheduled"}}مجدول{{else if eq .Data.Notif.Type "low_stock"}}مخزون منخفض{{else if eq .Data.Notif.Type "audit_alert"}}تنبيه تدقيق{{else}}{{.Data.Notif.Type}}{{end}}</td></tr>
+<tr><th>الاستهداف</th><td>{{.Data.Notif.Audience}}</td></tr>
+<tr><th>المنتج المرتبط</th><td>{{.Data.Notif.LinkedProductID}}</td></tr>
+<tr><th>وقت الإرسال</th><td>{{.Data.Notif.SendAt}}</td></tr>
+<tr><th>الحالة</th><td>{{.Data.Notif.Status}}</td></tr>
+<tr><th>مرات الإرسال المسجلة</th><td>{{.Data.Sent}}</td></tr>
+</table>
+<p><a href="/notifications/{{.Data.Notif.ID}}/log">سجل الإرسال الكامل</a> | <a href="/notifications/manage">عودة للإدارة</a></p>
+
+{{template "chrome-bottom" .}}

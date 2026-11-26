@@ -1,0 +1,9 @@
+{{template "chrome-top" .}}
+
+<h1>صلاحيات {{.Data.User.UserName}} ({{.Data.User.Role}})</h1>
+<table><tr><th>الصلاحية</th><th>مسموح</th></tr>
+{{range .Data.Summary}}<tr><td>{{.Label}} <span class="hint">({{.Perm}})</span></td><td>{{if .Allowed}}<span class="state-yes">{{template "icon-check"}}</span>{{else}}<span class="state-no">{{template "icon-x"}}</span>{{end}}</td></tr>{{end}}
+</table>
+<p><a href="/users">عودة للمستخدمين</a></p>
+
+{{template "chrome-bottom" .}}

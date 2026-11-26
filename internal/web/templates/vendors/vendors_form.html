@@ -1,0 +1,21 @@
+{{template "chrome-top" .}}
+{{if .Data.IsNew}}<h1>مورد جديد</h1>{{else}}<h1>تعديل المورد</h1>{{end}}
+<form method="post"{{if .Data.IsNew}} action="/vendors/new"{{else}} action="/vendors/{{.Data.Vendor.ID}}/edit"{{end}} class="form">
+  <label>اسم المورد * <input name="name" required{{if .Data.Vendor}} value="{{.Data.Vendor.Name}}"{{end}}></label>
+  <label>الهاتف <input name="phone"{{if .Data.Vendor}} value="{{.Data.Vendor.Phone}}"{{end}}></label>
+  <label>العنوان <input name="address"{{if .Data.Vendor}} value="{{.Data.Vendor.Address}}"{{end}}></label>
+  <label>ملاحظات <input name="notes"{{if .Data.Vendor}} value="{{.Data.Vendor.Notes}}"{{end}}></label>
+  <label>حد الائتمان (ج.م) <input name="credit_limit" inputmode="decimal" value="{{.Data.CreditLimitEGP}}"></label>
+  {{if not .Data.IsNew}}
+  <label>الحالة
+    <select name="is_active">
+      <option value="1"{{if .Data.Vendor.IsActive}} selected{{end}}>نشط</option>
+      <option value="0"{{if not .Data.Vendor.IsActive}} selected{{end}}>موقوف</option>
+    </select>
+  </label>
+  {{end}}
+  <button type="submit" class="btn-primary">حفظ</button>
+  <a href="/vendors">إلغاء</a>
+</form>
+{{if .Data.IsNew}}<p class="hint">إنشاء مورد جديد مسموح للكاشير أيضاً؛ التعديل والحذف للمدير فقط</p>{{end}}
+{{template "chrome-bottom" .}}

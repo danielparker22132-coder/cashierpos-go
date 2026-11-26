@@ -1,0 +1,13 @@
+{{template "chrome-top" .}}
+
+<h1>إعدادات تنبيهاتي</h1>
+<p>أوقف أي نوع لا تريد استلامه. الإعداد الافتراضي: كل الأنواع مفعّلة</p>
+<form method="post" class="form">
+{{range .Data}}<label><input type="checkbox" name="type_{{.Type}}" value="1"{{if .Enabled}} checked{{end}}>
+{{if eq .Type "price_drop"}}انخفاض سعر{{else if eq .Type "offer"}}عرض{{else if eq .Type "custom"}}مخصص{{else if eq .Type "scheduled"}}مجدول{{else if eq .Type "low_stock"}}مخزون منخفض{{else if eq .Type "audit_alert"}}تنبيه تدقيق{{else}}{{.Type}}{{end}}
+</label>{{end}}
+<button type="submit" class="btn-primary">حفظ الإعدادات</button>
+</form>
+<p><a href="/notifications">عودة للتنبيهات</a></p>
+
+{{template "chrome-bottom" .}}

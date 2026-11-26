@@ -1,0 +1,30 @@
+{{template "chrome-top" .}}
+<h1>العملاء</h1>
+<p>
+  <a class="btn btn-primary" href="/customers/new">{{template "icon-plus"}} عميل جديد</a>
+  <a class="btn" href="/debtors">{{template "icon-clipboard"}} قائمة المدينين</a>
+</p>
+<form method="get" action="/customers" class="form inline">
+  <label>بحث بالاسم أو الهاتف <input name="q" value="{{.Data.Q}}"></label>
+  <button type="submit">بحث</button>
+</form>
+<table>
+  <thead><tr><th>الاسم</th><th>الهاتف</th><th>العنوان</th><th>الرصيد الحي</th><th>حد الائتمان</th><th>الحالة</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Customers}}
+    <tr>
+      <td><a href="/customers/{{.ID}}">{{.Name}}</a></td>
+      <td class="num">{{.Phone}}</td>
+      <td>{{.Address}}</td>
+      <td class="num">{{egp .Balance}}</td>
+      <td class="num">{{egp .CreditLimit}}</td>
+      <td>{{if .IsActive}}نشط{{else}}موقوف{{end}}</td>
+      <td><a href="/customers/{{.ID}}/edit">تعديل</a> · <a href="/customers/{{.ID}}/statement">كشف حساب</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7">لا يوجد عملاء مطابقون</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">الرصيد المعروض هو المجموع الحي لمتبقي الفواتير غير الملغاة، وليس العمود المخزّن</p>
+{{template "chrome-bottom" .}}

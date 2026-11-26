@@ -1,0 +1,212 @@
+{{template "chrome-top" .}}
+<h1>الشيفت والدرج</h1>
+
+{{if .Data.Status}}
+<p>الحالة: <strong>{{.Data.Status.StatusText}}</strong> — التاريخ: {{.Data.Status.Date}}</p>
+{{end}}
+
+{{if .Data.OpenShift}}
+  <h2>شيفت مفتوح #{{.Data.OpenShift.ID}} — {{.Data.OpenShift.UserName}}</h2>
+  {{if .Data.Summary}}
+  <table>
+    <thead><tr><th>البند</th><th>القيمة</th></tr></thead>
+    <tbody>
+      <tr><td>رصيد الافتتاح</td><td class="num">{{egp .Data.Summary.OpeningBalance}}</td></tr>
+      <tr><td>مبيعات نقدية</td><td class="num">{{egp .Data.Summary.CashSales}}</td></tr>
+      <tr><td>نقد محتفظ به من فواتير ملغاة</td><td class="num">{{egp .Data.Summary.RetainedCanceledCash}}</td></tr>
+      <tr><td>مبيعات فيزا</td><td class="num">{{egp .Data.Summary.VisaSales}}</td></tr>
+      <tr><td>مبيعات فودافون كاش</td><td class="num">{{egp .Data.Summary.VodafoneSales}}</td></tr>
+      <tr><td>تحصيل مديونية نقدي</td><td class="num">{{egp .Data.Summary.CashDebtCollection}}</td></tr>
+      <tr><td>إضافات للدرج</td><td class="num">{{egp .Data.Summary.CashIn}}</td></tr>
+      <tr><td>مرتجعات نقدية</td><td class="num">{{egp .Data.Summary.CashReturns}}</td></tr>
+      <tr><td>سحوبات من الدرج</td><td class="num">{{egp .Data.Summary.CashOut}}</td></tr>
+      <tr><td>مصروفات</td><td class="num">{{egp .Data.Summary.ExpensesTotal}}</td></tr>
+      <tr><td>إجمالي المبيعات</td><td class="num">{{egp .Data.Summary.TotalSales}}</td></tr>
+      <tr><td>عدد الفواتير</td><td class="num">{{.Data.Summary.InvoiceCount}}</td></tr>
+      <tr><td>عدد الجلسات</td><td class="num">{{.Data.Summary.SessionCount}}</td></tr>
+      <tr><td><strong>الرصيد المتوقع في الدرج</strong></td><td class="num"><strong>{{egp .Data.Summary.ExpectedBalance}}</strong></td></tr>
+    </tbody>
+  </table>
+  {{end}}
+  <form method="post" action="/shifts/close" class="form inline" onsubmit="return confirm('هل أنت متأكد من إغلاق الشيفت الآن؟')">
+    <input type="hidden" name="shift_id" value="{{.Data.OpenShift.ID}}">
+    <button type="submit" class="btn btn-primary">{{template "icon-lock"}} إغلاق الشيفت (الفعلي = المتوقع)</button>
+  </form>
+  <p><a class="btn" href="/shifts/{{.Data.OpenShift.ID}}">تفاصيل الشيفت</a></p>
+
+  <h2>إضافة / سحب من الدرج</h2>
+  <form method="post" action="/cashbox/in" class="form inline">
+    <label>المبلغ (ج.م) <input name="amount" required inputmode="decimal"></label>
+    <label>السبب <input name="reason" required></label>
+    <input type="hidden" name="shift_id" value="{{.Data.OpenShift.ID}}">
+    <button type="submit" class="btn btn-primary">{{template "icon-plus"}} إضافة للدرج</button>
+  </form>
+  <form method="post" action="/cashbox/out" class="form inline">
+    <label>المبلغ (ج.م) <input name="amount" required inputmode="decimal"></label>
+    <label>السبب <input name="reason" required></label>
+    <input type="hidden" name="shift_id" value="{{.Data.OpenShift.ID}}">
+    <button type="submit" class="btn btn-primary">{{template "icon-minus"}} سحب من الدرج</button>
+  </form>
+  <p class="hint">السحب يُرفض إن تجاوز رصيد الدرج المتوقع — السالب ممنوع، والمساوي للرصيد مسموح</p>
+
+  <h2>عدّ الدرج</h2>
+  <form method="post" action="/cashbox/count" class="form inline">
+    <input type="hidden" name="shift_id" value="{{.Data.OpenShift.ID}}">
+    <label>المبلغ المعدود (ج.م) <input name="amount" required inputmode="decimal"></label>
+    <label>الفئات <input name="denominations" placeholder="مثال: 200×5، 100×10"></label>
+    <label>ملاحظة <input name="notes"></label>
+    <button type="submit" class="btn btn-primary">{{template "icon-banknote"}} تسجيل العدّ</button>
+  </form>
+  {{if .Data.CashCounts}}
+  <table>
+    <thead><tr><th>المعدود</th><th>المتوقع</th><th>الفرق</th><th>الحالة</th><th>المراجعة</th><th>المراجع</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.CashCounts}}
+      <tr>
+        <td class="num">{{egp .AmountCounted}}</td>
+        <td class="num">{{egp .ExpectedAmount}}</td>
+        <td class="num">{{egp .Difference}} ({{.DifferenceStatus}})</td>
+        <td>{{if eq .ReviewStatus "approved"}}معتمد{{else if eq .ReviewStatus "rejected"}}مرفوض{{else}}قيد الانتظار{{end}}</td>
+        <td>{{.ReviewedBy}} {{.ReviewedAt}}</td>
+        <td>
+          {{if eq .ReviewStatus "pending"}}
+            {{if and (can $.User "review_cash_count") (or (not (eq .CountedBy $.User.UserName)) (eq $.User.Role "manager") (eq $.User.Role "admin"))}}
+          <form method="post" action="/cashbox/count/{{.ID}}/review" class="form inline">
+            <input name="note" placeholder="ملاحظة المراجعة">
+            <button type="submit" name="approve" value="1" class="btn">اعتماد</button>
+            <button type="submit" name="approve" value="0" class="btn">رفض</button>
+          </form>
+            {{else}}
+          <form method="post" action="/cashbox/count/{{.ID}}/review" class="form inline">
+            <button type="submit" name="approve" value="1" class="btn" disabled>اعتماد</button>
+            <button type="submit" name="approve" value="0" class="btn" disabled>رفض</button>
+          </form>
+              {{if and (eq .CountedBy $.User.UserName) (eq $.User.Role "cashier")}}<p class="hint">لا يمكنك اعتماد عدّك الخاص — يجب أن يعتمده مستخدم آخر</p>{{end}}
+            {{end}}
+          {{else}}
+            {{if eq .ReviewStatus "approved"}}معتمد{{else if eq .ReviewStatus "rejected"}}مرفوض{{end}}
+          {{end}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="hint">المراجعة للمدير أو لكاشير آخر — الكاشير لا يمكنه اعتماد عدّه الخاص، والمدير والأدمن يستثنوا. العدّ المتوازن (فرق صفر) يُقبل ولا يُرفض. الفرق لا يمنع إغلاق الشيفت</p>
+  {{end}}
+{{else}}
+  <h2>فتح شيفت</h2>
+  {{if and .Data.Status (eq .Data.Status.State "closed")}}
+  <p class="hint">يوجد يوم عمل محفوظ لهذا المستخدم اليوم ومغلق حالياً — يمكن استكماله بنفس الرصيد والتجميعات السابقة بدون تصفير</p>
+  <form method="post" action="/shifts/open" class="form inline">
+    <input type="hidden" name="resume" value="1">
+    <button type="submit" class="btn btn-primary">{{template "icon-play"}} استكمال يوم العمل</button>
+  </form>
+  {{end}}
+  <form method="post" action="/shifts/open" class="form inline">
+    <label>رصيد بداية الدرج لهذا اليوم (ج.م) <input name="opening" value="0" inputmode="decimal"></label>
+    <button type="submit" class="btn btn-primary">{{template "icon-clock"}} فتح شيفت</button>
+  </form>
+  <p class="hint">رصيد الافتتاح يُكتب كل يوم من صفر — لا ترحيل من إغلاق سابق، ولا فتح تلقائي أبداً</p>
+{{end}}
+
+  {{if .Data.CanReviewCashCount}}
+  <h2>العدّات المنتظرة للمراجعة</h2>
+  {{if .Data.PendingCounts}}
+  <table>
+    <thead><tr><th>الكاشير</th><th>الشيفت</th><th>المعدود</th><th>المتوقع</th><th>الفرق</th><th>الحالة</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.PendingCounts}}
+      <tr>
+        <td>{{.CountedBy}}</td>
+        <td>{{.ShiftID}}</td>
+        <td class="num">{{egp .AmountCounted}}</td>
+        <td class="num">{{egp .ExpectedAmount}}</td>
+        <td class="num">{{egp .Difference}} ({{.DifferenceStatus}})</td>
+        <td>قيد الانتظار</td>
+        <td>
+          {{if and (can $.User "review_cash_count") (or (not (eq .CountedBy $.User.UserName)) (eq $.User.Role "manager") (eq $.User.Role "admin"))}}
+          <form method="post" action="/cashbox/count/{{.ID}}/review" class="form inline">
+            <input name="note" placeholder="ملاحظة المراجعة">
+            <button type="submit" name="approve" value="1" class="btn">اعتماد</button>
+            <button type="submit" name="approve" value="0" class="btn">رفض</button>
+          </form>
+          {{else}}
+          <form method="post" action="/cashbox/count/{{.ID}}/review" class="form inline">
+            <button type="submit" name="approve" value="1" class="btn" disabled>اعتماد</button>
+            <button type="submit" name="approve" value="0" class="btn" disabled>رفض</button>
+          </form>
+            {{if and (eq .CountedBy $.User.UserName) (eq $.User.Role "cashier")}}<p class="hint">لا يمكنك اعتماد عدّك الخاص — يجب أن يعتمده مستخدم آخر</p>{{end}}
+          {{end}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p>لا توجد عدّات بانتظار المراجعة</p>
+  {{end}}
+  {{end}}
+
+{{if can .User "view_cashcount_approvals"}}
+<p><a class="btn" href="/cashcount-approvals">{{template "icon-clipboard"}} سجل اعتماد العدّات</a></p>
+{{end}}
+
+<h2>حركات الدرج اليوم</h2>
+<table>
+  <thead><tr><th>الوقت</th><th>المستخدم</th><th>النوع</th><th>المبلغ</th><th>السبب</th><th>الشيفت</th></tr></thead>
+  <tbody>
+  {{range .Data.Movements}}
+    <tr>
+      <td>{{.MovementDate}}</td>
+      <td>{{.UserName}}</td>
+      <td>{{.MovementType}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td>{{.Reason}}</td>
+      <td>{{.ShiftID}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد حركات اليوم</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>شيفتات اليوم</h2>
+<table>
+  <thead><tr><th>رقم</th><th>المستخدم</th><th>الحالة</th><th>رصيد الافتتاح</th><th>المتوقع</th><th>الفعلي</th><th>الفرق</th><th>الجلسات</th></tr></thead>
+  <tbody>
+  {{range .Data.ShiftsToday}}
+    <tr>
+      <td><a href="/shifts/{{.ID}}">{{.ID}}</a></td>
+      <td>{{.UserName}}</td>
+      <td>{{.Status}}</td>
+      <td class="num">{{egp .OpeningBalance}}</td>
+      <td class="num">{{egp .ExpectedBalance}}</td>
+      <td class="num">{{egp .ActualBalance}}</td>
+      <td class="num">{{egp .Difference}} {{.DifferenceStatus}}</td>
+      <td>{{.SessionCount}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="8">لا توجد شيفتات اليوم</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>مصروفات اليوم</h2>
+<table>
+  <thead><tr><th>الوصف</th><th>الفئة</th><th>المبلغ</th><th>المستخدم</th><th>الوقت</th></tr></thead>
+  <tbody>
+  {{range .Data.Expenses}}
+    <tr>
+      <td>{{.Description}}</td>
+      <td>{{.Category}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td>{{.UserName}}</td>
+      <td>{{.ExpenseDate}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5">لا توجد مصروفات اليوم</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p><a class="btn" href="/expenses">إدارة المصروفات</a> <a class="btn" href="/returns">المرتجعات</a> <a class="btn" href="/dailyclose">الإغلاق اليومي</a></p>
+{{template "chrome-bottom" .}}

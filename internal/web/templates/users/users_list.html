@@ -1,0 +1,15 @@
+{{template "chrome-top" .}}
+
+<h1>المستخدمون</h1>
+<p><a class="btn btn-primary" href="/users/new">+ مستخدم جديد</a></p>
+{{if .Data}}
+<table><tr><th>اسم المستخدم</th><th>الاسم الكامل</th><th>الدور</th><th>مفعّل</th><th>يجب تغيير كلمة السر</th><th>أُنشئ</th><th>إجراءات</th></tr>
+{{range .Data}}<tr>
+<td>{{.UserName}}</td><td>{{.FullName}}</td><td>{{.Role}}</td>
+<td>{{if .IsActive}}نعم{{else}}لا{{end}}</td><td>{{if .MustChangePassword}}نعم{{else}}لا{{end}}</td><td>{{.CreatedDate}}</td>
+<td><a href="/users/{{.ID}}/edit">تعديل</a> | <a href="/users/{{.ID}}/permissions">الصلاحيات</a>
+<form method="post" action="/users/{{.ID}}/delete" style="display:inline" onsubmit="return confirm('حذف المستخدم {{.UserName}}؟')"><button type="submit">حذف</button></form></td>
+</tr>{{end}}</table>
+{{else}}<p>لا يوجد مستخدمون</p>{{end}}
+
+{{template "chrome-bottom" .}}

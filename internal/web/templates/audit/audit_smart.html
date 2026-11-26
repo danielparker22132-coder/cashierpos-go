@@ -1,0 +1,26 @@
+{{template "chrome-top" .}}
+
+<h1>تقارير التدقيق الذكية</h1>
+<form method="get" class="form" style="max-width:700px">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<label>التقرير <select name="kind">
+<option value="cancels"{{if eq .Data.Kind "cancels"}} selected{{end}}>إلغاءات</option>
+<option value="returns"{{if eq .Data.Kind "returns"}} selected{{end}}>مرتجعات</option>
+<option value="discounts"{{if eq .Data.Kind "discounts"}} selected{{end}}>خصومات</option>
+<option value="dangerous"{{if eq .Data.Kind "dangerous"}} selected{{end}}>إجراءات خطرة</option>
+<option value="debts"{{if eq .Data.Kind "debts"}} selected{{end}}>ديون</option>
+<option value="hourly"{{if eq .Data.Kind "hourly"}} selected{{end}}>حسب الساعة</option>
+<option value="suspicious_users"{{if eq .Data.Kind "suspicious_users"}} selected{{end}}>مستخدمون مشبوهون</option>
+<option value="cashier_compare"{{if eq .Data.Kind "cashier_compare"}} selected{{end}}>مقارنة كاشير</option>
+</select></label>
+<label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+<label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+<button type="submit">عرض</button>
+</div></form>
+{{if .Data.Rows}}
+<table><tr><th>البند</th><th>العدد</th><th>المبلغ</th></tr>
+{{range .Data.Rows}}<tr><td>{{.Label}}</td><td>{{.Count}}</td><td class="num">{{egp .Amount}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد بيانات خلال الفترة المحددة</p>{{end}}
+<p><a href="/audit">عودة لسجل التدقيق</a></p>
+
+{{template "chrome-bottom" .}}

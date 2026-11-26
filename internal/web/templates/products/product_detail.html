@@ -1,0 +1,48 @@
+{{template "chrome-top" .}}
+{{$p := index .Data "product"}}
+<h1>{{$p.Name}}{{if $p.IsWeighted}} (وزني){{end}}</h1>
+<p>
+  الباركود: <span class="num">{{$p.Barcode}}</span> |
+  الفئة: {{$p.Category}} | المورد: {{$p.Supplier}} | الوحدة: {{$p.Unit}}<br>
+  سعر الشراء: {{egp $p.BuyPrice}} | القطاعي: {{egp $p.RetailPrice}} |
+  الجملة: {{egp $p.WholesalePrice}} | جملة الجملة: {{egp $p.BulkPrice}}<br>
+  الكمية: <b>{{qty $p.Quantity}}</b> | الحد الأدنى: {{qty $p.MinQuantity}}
+  {{if index .Data "lowStock"}} <b class="low-stock-text">— مخزون منخفض</b>{{end}}<br>
+  الصلاحية: {{$p.ExpiryDate}} (تنبيه قبل {{$p.ExpiryAlertDays}} يومًا) |
+  التشغيلة: {{$p.BatchNumber}}<br>
+  {{if $p.IsWeighted}}كود الميزان PLU: <span class="num">{{$p.ScalePLU}}</span> | سعر الكيلو: {{egp $p.PricePerKg}} | نوع الباركود: {{$p.ScaleBarcodeType}} | الميزان: {{if $p.ScaleEnabled}}مفعّل{{else}}معطّل{{end}}{{end}}
+</p>
+<p>
+  {{if index .Data "canManage"}}<a href="/products/{{$p.ID}}/edit">تعديل المنتج</a> | {{end}}
+  <a href="/products">عودة للمنتجات</a>
+</p>
+
+{{if index .Data "canAddStock"}}
+<h2>إضافة مخزون</h2>
+<form method="post" action="/products/{{$p.ID}}/add-stock" class="form">
+  <label>الكمية <input name="quantity" required placeholder="مثال: 10 أو 1.5"></label>
+  <button type="submit" class="btn-primary">إضافة للمخزون</button>
+</form>
+{{end}}
+
+{{if index .Data "canAdjust"}}
+<h2>تعديل المخزون (قيمة مطلقة)</h2>
+<form method="post" action="/products/{{$p.ID}}/adjust-stock" class="form">
+  <label>الكمية الجديدة المطلقة <input name="quantity" required placeholder="مثال: 25"></label>
+  <label>سبب التعديل (إلزامي) <input name="reason" required></label>
+  <button type="submit" class="btn-primary">تثبيت الكمية</button>
+</form>
+{{end}}
+
+<h2>سجل حركة المخزون</h2>
+<table>
+  <thead><tr><th>التاريخ</th><th>النوع</th><th>الكمية</th><th>سعر الشراء</th><th>ملاحظات</th></tr></thead>
+  <tbody>
+  {{range $m := index .Data "movements"}}
+    <tr><td>{{$m.Date}}</td><td>{{$m.Type}}</td><td class="num">{{qty $m.Quantity}}</td><td class="num">{{egp $m.BuyPrice}}</td><td>{{$m.Notes}}</td></tr>
+  {{else}}
+    <tr><td colspan="5">لا توجد حركات مسجلة</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

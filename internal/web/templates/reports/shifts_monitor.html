@@ -1,0 +1,19 @@
+{{template "chrome-top" .}}
+
+<h1>مراقب الشيفتات</h1>
+<form method="get" class="form" style="max-width:700px">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+<label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+<button type="submit">عرض</button>
+</div></form>
+<h2>الشيفتات المفتوحة</h2>
+{{if .Data.OpenShifts}}<table><tr><th>الكاشير</th><th>التاريخ</th><th>وقت الفتح</th><th>رصيد الفتح</th><th>الدرج المتوقع</th></tr>
+{{range .Data.OpenShifts}}<tr><td>{{.UserName}}</td><td>{{.ShiftDate}}</td><td>{{.OpenTime}}</td><td class="num">{{egp .OpeningBalance}}</td><td class="num">{{egp .ExpectedDrawer}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد شيفتات مفتوحة</p>{{end}}
+<h2>أداء الكاشير ({{.Data.From}} — {{.Data.To}})</h2>
+{{if .Data.Performance}}<table><tr><th>الكاشير</th><th>عدد الفواتير</th><th>إجمالي المبيعات</th><th>ملغاة</th><th>مرتجعات</th><th>قيمة المرتجعات</th></tr>
+{{range .Data.Performance}}<tr><td>{{.UserName}}</td><td>{{.InvoiceCount}}</td><td class="num">{{egp .TotalSales}}</td><td>{{.CanceledCount}}</td><td>{{.ReturnCount}}</td><td class="num">{{egp .ReturnTotal}}</td></tr>{{end}}</table>
+{{else}}<p>لا توجد مبيعات في الفترة</p>{{end}}
+
+{{template "chrome-bottom" .}}

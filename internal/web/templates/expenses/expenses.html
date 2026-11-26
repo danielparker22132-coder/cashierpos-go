@@ -1,0 +1,49 @@
+{{template "chrome-top" .}}
+<h1>المصروفات</h1>
+<p class="hint">المصروف يتطلب شيفتاً مفتوحاً، ويُخصم من رصيد الدرج المتوقع، ويُرفض إن تجاوز رصيد الدرج. تعديل مبلغ مصروف أو حذفه بعد إغلاق الشيفت مرفوض</p>
+
+<h2>تسجيل مصروف</h2>
+<form method="post" action="/expenses" class="form inline">
+  <label>الوصف <input name="description" required></label>
+  <label>المبلغ (ج.م) <input name="amount" required inputmode="decimal"></label>
+  <label>الفئة <input name="category" placeholder="مثال: تشغيل"></label>
+  <button type="submit" class="btn btn-primary">{{template "icon-banknote"}} تسجيل المصروف</button>
+</form>
+
+<form method="get" action="/expenses" class="form inline">
+  <label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+  <label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+  <button type="submit">عرض</button>
+  <a class="btn" href="/expenses/export?from={{.Data.From}}&to={{.Data.To}}">{{template "icon-upload"}} تصدير CSV</a>
+</form>
+
+<table>
+  <thead><tr><th>الوصف</th><th>الفئة</th><th>المبلغ</th><th>المستخدم</th><th>الشيفت</th><th>التاريخ</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Expenses}}
+    <tr>
+      <td>{{.Description}}</td>
+      <td>{{.Category}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td>{{.UserName}}</td>
+      <td>{{.ShiftID}}</td>
+      <td>{{.ExpenseDate}}</td>
+      <td>
+        <form method="post" action="/expenses/{{.ID}}/edit" class="form inline">
+          <input name="description" value="{{.Description}}" required>
+          <input name="amount" value="{{egp .Amount}}" required inputmode="decimal">
+          <input name="category" value="{{.Category}}">
+          <button type="submit" class="btn btn-primary">حفظ</button>
+        </form>
+        <form method="post" action="/expenses/{{.ID}}/delete" class="form inline" onsubmit="return confirm('حذف هذا المصروف؟')">
+          <button type="submit" class="btn">حذف</button>
+        </form>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7">لا توجد مصروفات في الفترة</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">ملاحظة: حقل المبلغ في التعديل يقبل صيغة «12.50» أو «12.50 ج.م»</p>
+{{template "chrome-bottom" .}}

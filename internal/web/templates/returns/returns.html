@@ -1,0 +1,70 @@
+{{template "chrome-top" .}}
+<h1>المرتجعات</h1>
+<p class="hint">المرتجع يتطلب فاتورة موجودة غير ملغاة، وكمية أكبر من صفر ولا تتجاوز المتاح (مباع − مرتجع سابقاً)، وسبباً إلزامياً. يُخفَّض الدين أولاً، ثم يُدفع الباقي نقداً من الدرج عند وجود شيفت مفتوح</p>
+
+<h2>مرتجع جزئي</h2>
+<form method="post" action="/returns" class="form">
+  <label>رقم الفاتورة (InvoiceID) <input name="invoice_id" required inputmode="numeric"></label>
+  <label>سبب المرتجع <input name="reason" required></label>
+  <label>طريقة دفع المرتجع
+    <select name="method">
+      <option value="Cash">كاش</option>
+      <option value="Visa">فيزا</option>
+      <option value="Vodafone Cash">فودافون كاش</option>
+    </select>
+  </label>
+  <table>
+    <thead><tr><th>رقم المنتج</th><th>الكمية</th></tr></thead>
+    <tbody>
+      <tr><td><input name="product_id" inputmode="numeric"></td><td><input name="qty" inputmode="decimal" placeholder="مثال: 1"></td></tr>
+      <tr><td><input name="product_id" inputmode="numeric"></td><td><input name="qty" inputmode="decimal"></td></tr>
+      <tr><td><input name="product_id" inputmode="numeric"></td><td><input name="qty" inputmode="decimal"></td></tr>
+    </tbody>
+  </table>
+  <button type="submit" class="btn btn-primary">{{template "icon-undo"}} تنفيذ المرتجع</button>
+</form>
+
+<h2>مرتجع كامل</h2>
+<form method="post" action="/returns/all" class="form inline">
+  <label>رقم الفاتورة (InvoiceID) <input name="invoice_id" required inputmode="numeric"></label>
+  <label>سبب المرتجع <input name="reason" required></label>
+  <label>طريقة دفع المرتجع
+    <select name="method">
+      <option value="Cash">كاش</option>
+      <option value="Visa">فيزا</option>
+      <option value="Vodafone Cash">فودافون كاش</option>
+    </select>
+  </label>
+  <button type="submit" class="btn btn-primary" onclick="return confirm('سيتم إرجاع كل الكميات المتاحة في الفاتورة. متابعة؟')">{{template "icon-undo"}} إرجاع الكل</button>
+</form>
+
+<h2>مرتجعات اليوم</h2>
+<form method="get" action="/returns" class="form inline">
+  <label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+  <label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+  <button type="submit">عرض</button>
+</form>
+<table>
+  <thead><tr><th>رقم المرتجع</th><th>الفاتورة</th><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>قيمة المرتجع</th><th>مجاني مسترد</th><th>السبب</th><th>المستخدم</th><th>التاريخ</th><th>طريقة الدفع</th></tr></thead>
+  <tbody>
+  {{range .Data.Returns}}
+    <tr>
+      <td>{{.ReturnID}}</td>
+      <td>{{.InvoiceNumber}}</td>
+      <td>{{.ProductName}}</td>
+      <td class="num">{{qty .Qty}}</td>
+      <td class="num">{{if approxReturn .UnitPrice .Qty .TotalRefund}}≈{{end}}{{egp .UnitPrice}}</td>
+      <td class="num">{{egp .TotalRefund}}</td>
+      <td class="num">{{if gt .VoidedFreeQty 0}}{{qty .VoidedFreeQty}} ({{egp .VoidedFreeCost}}){{else}}—{{end}}</td>
+      <td>{{.Reason}}</td>
+      <td>{{.UserName}}</td>
+      <td>{{.ReturnDate}}</td>
+      <td>{{.ReturnPaymentMethod}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="11">لا توجد مرتجعات في الفترة</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p><a class="btn" href="/returns/analysis">{{template "icon-chart"}} تحليلات المرتجعات</a></p>
+{{template "chrome-bottom" .}}

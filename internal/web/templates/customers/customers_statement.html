@@ -1,0 +1,44 @@
+{{template "chrome-top" .}}
+<h1>كشف حساب: {{.Data.Statement.Customer.Name}}</h1>
+<p>الهاتف: <span class="num">{{.Data.Statement.Customer.Phone}}</span> · حد الائتمان: <span class="num">{{egp .Data.Statement.Customer.CreditLimit}}</span></p>
+<p><button onclick="window.print()">{{template "icon-printer"}} طباعة</button> <a href="/customers/{{.Data.Statement.Customer.ID}}">عودة للعميل</a></p>
+<h2>الفواتير</h2>
+<table>
+  <thead><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>الحالة</th></tr></thead>
+  <tbody>
+  {{range .Data.Statement.Invoices}}
+    <tr>
+      <td class="num"><a href="/sales/{{.InvoiceID}}">{{.InvoiceNo}}</a></td>
+      <td class="num">{{.Date}}</td>
+      <td class="num">{{egp .NetAmount}}</td>
+      <td class="num">{{egp .PaidAmount}}</td>
+      <td class="num">{{egp .Remaining}}</td>
+      <td>{{if .IsCanceled}}ملغاة{{else}}سارية{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد فواتير</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<h2>المدفوعات</h2>
+<table>
+  <thead><tr><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>فاتورة</th><th>ملاحظات</th></tr></thead>
+  <tbody>
+  {{range .Data.Statement.Payments}}
+    <tr>
+      <td class="num">{{.Date}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td>{{.Method}}</td>
+      <td class="num">{{if .InvoiceNo.Valid}}{{.InvoiceNo.Int64}}{{end}}</td>
+      <td>{{.Notes}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5">لا توجد مدفوعات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<h2>المجاميع</h2>
+<p>إجمالي المشتريات: <strong class="num">{{egp .Data.Statement.TotalPurchases}}</strong></p>
+<p>إجمالي المدفوع: <strong class="num">{{egp .Data.Statement.TotalPaid}}</strong></p>
+<p>المتبقي (الرصيد الحي): <strong class="num">{{egp .Data.Statement.TotalRemaining}}</strong></p>
+{{template "chrome-bottom" .}}

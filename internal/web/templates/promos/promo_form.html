@@ -1,0 +1,99 @@
+{{template "chrome-top" .}}
+{{$o := index .Data "offer"}}
+{{$isNew := index .Data "isNew"}}
+<h1>{{if $isNew}}عرض جديد{{else}}تعديل عرض: {{$o.Name}}{{end}}</h1>
+<p class="hint">الأنواع التي تأخذ منتجات: خصم % على منتج، خصم مبلغ ثابت على منتج، سعر ترويجي على منتج، اشترِ واحصل مجانًا، سعر ثابت لحزمة. خصم % على فئة يأخذ فئة واحدة على الأقل (اكتب اسم الفئة). خصم ثابت على الفاتورة وخصم % عند حد أدنى بلا أهداف. الحزمة تحتاج منتجين على الأقل مع الكمية المطلوبة لكل منتج. لنوع «سعر ترويجي على منتج» اكتب السعر النهائي للبيع في حقل السعر الترويجي — يجب أن يكون أقل من سعر البيع الحالي (0 = مجاني)</p>
+<form method="post" class="form" style="max-width:640px">
+  <label>اسم العرض * <input name="name" required value="{{if $o}}{{$o.Name}}{{end}}"></label>
+  <label>النوع
+    <select name="type" id="otype">
+      <option value="product_pct" {{if $o}}{{if eq $o.Type "product_pct"}}selected{{end}}{{end}}>خصم % على منتج</option>
+      <option value="category_pct" {{if $o}}{{if eq $o.Type "category_pct"}}selected{{end}}{{end}}>خصم % على فئة</option>
+      <option value="invoice_fixed" {{if $o}}{{if eq $o.Type "invoice_fixed"}}selected{{end}}{{end}}>خصم ثابت على الفاتورة</option>
+      <option value="buy_x_get_y" {{if $o}}{{if eq $o.Type "buy_x_get_y"}}selected{{end}}{{end}}>اشترِ واحصل مجانًا</option>
+      <option value="bundle_fixed" {{if $o}}{{if eq $o.Type "bundle_fixed"}}selected{{end}}{{end}}>سعر ثابت لحزمة</option>
+      <option value="threshold_pct" {{if $o}}{{if eq $o.Type "threshold_pct"}}selected{{end}}{{end}}>خصم % عند حد أدنى</option>
+      <option value="product_fixed" {{if $o}}{{if eq $o.Type "product_fixed"}}selected{{end}}{{end}}>خصم مبلغ ثابت على منتج</option>
+      <option value="product_price" {{if $o}}{{if eq $o.Type "product_price"}}selected{{end}}{{end}}>سعر ترويجي على منتج</option>
+    </select>
+  </label>
+  <label>النسبة % (لأنواع % فقط) <input name="percent" value="{{index .Data "percent"}}" placeholder="مثال: 10"></label>
+  <label>المبلغ الثابت لكل وحدة / سعر الحزمة / السعر الترويجي (ج.م) <input name="amount" value="{{index .Data "amount"}}" placeholder="مثال: 50.00"></label>
+  <p class="hint" id="priceHint" hidden></p>
+  <label>الحد الأدنى للفاتورة (ج.م) — لخصم النسبة عند حد أدنى <input name="threshold" value="{{index .Data "threshold"}}" placeholder="مثال: 200.00"></label>
+  <label>اشترِ X (عدد الوحدات المدفوعة) — لـ «اشترِ واحصل مجانًا» <input name="buy_x" value="{{index .Data "buy_x"}}" placeholder="مثال: 2"></label>
+  <label>احصل على Y مجانًا — لـ «اشترِ واحصل مجانًا» <input name="free_y" value="{{index .Data "free_y"}}" placeholder="مثال: 1"></label>
+  <label>يبدأ في <input name="start_at" placeholder="YYYY-MM-DD أو YYYY-MM-DD HH:MM:SS" value="{{if $o}}{{$o.StartAt}}{{end}}"></label>
+  <label>ينتهي في <input name="end_at" placeholder="YYYY-MM-DD (يشمل اليوم كاملًا)" value="{{if $o}}{{$o.EndAt}}{{end}}"></label>
+  <label><input type="checkbox" name="is_active" value="1" {{if $o}}{{if $o.IsActive}}checked{{end}}{{else}}checked{{end}}> مفعّل</label>
+
+  <h2>الأهداف</h2>
+  <p class="hint">املأ صفًا واحدًا لكل هدف (حتى 4 أهداف من هذه الشاشة)</p>
+  <div class="promo-target">
+    <label>نوع الهدف <select name="target_type"><option value="">— بلا هدف —</option><option value="product">منتج</option><option value="category">فئة</option></select></label>
+    <label>المنتج <select name="target_id"><option value="0">—</option>{{range $p := index $.Data "products"}}<option value="{{$p.ID}}" data-price="{{$p.RetailPrice}}">{{$p.Name}}</option>{{end}}</select></label>
+    <label>اسم الفئة (للهدف من نوع فئة) <input name="target_name" list="cats" placeholder="مثال: مواد غذائية"></label>
+    <label>الكمية المطلوبة (للحزمة) <input name="target_qty" value="1"></label>
+  </div>
+  <div class="promo-target">
+    <label>نوع الهدف <select name="target_type"><option value="">— بلا هدف —</option><option value="product">منتج</option><option value="category">فئة</option></select></label>
+    <label>المنتج <select name="target_id"><option value="0">—</option>{{range $p := index $.Data "products"}}<option value="{{$p.ID}}" data-price="{{$p.RetailPrice}}">{{$p.Name}}</option>{{end}}</select></label>
+    <label>اسم الفئة (للهدف من نوع فئة) <input name="target_name" list="cats" placeholder="مثال: مواد غذائية"></label>
+    <label>الكمية المطلوبة (للحزمة) <input name="target_qty" value="1"></label>
+  </div>
+  <div class="promo-target">
+    <label>نوع الهدف <select name="target_type"><option value="">— بلا هدف —</option><option value="product">منتج</option><option value="category">فئة</option></select></label>
+    <label>المنتج <select name="target_id"><option value="0">—</option>{{range $p := index $.Data "products"}}<option value="{{$p.ID}}" data-price="{{$p.RetailPrice}}">{{$p.Name}}</option>{{end}}</select></label>
+    <label>اسم الفئة (للهدف من نوع فئة) <input name="target_name" list="cats" placeholder="مثال: مواد غذائية"></label>
+    <label>الكمية المطلوبة (للحزمة) <input name="target_qty" value="1"></label>
+  </div>
+  <div class="promo-target">
+    <label>نوع الهدف <select name="target_type"><option value="">— بلا هدف —</option><option value="product">منتج</option><option value="category">فئة</option></select></label>
+    <label>المنتج <select name="target_id"><option value="0">—</option>{{range $p := index $.Data "products"}}<option value="{{$p.ID}}" data-price="{{$p.RetailPrice}}">{{$p.Name}}</option>{{end}}</select></label>
+    <label>اسم الفئة (للهدف من نوع فئة) <input name="target_name" list="cats" placeholder="مثال: مواد غذائية"></label>
+    <label>الكمية المطلوبة (للحزمة) <input name="target_qty" value="1"></label>
+  </div>
+  <datalist id="cats">{{range $c := index $.Data "categories"}}<option value="{{$c}}">{{end}}</datalist>
+  {{if $o}}
+  <p class="hint">الأهداف الحالية:
+    {{range $t := $o.Targets}}{{if eq $t.TargetType "product"}}منتج{{else if eq $t.TargetType "category"}}فئة{{else}}{{$t.TargetType}}{{end}}: {{$t.TargetName}}{{$t.TargetID}} (كمية {{qty $t.Qty}})؛ {{end}}
+    — اترك صفوف الأهداف فارغة للإبقاء عليها، أو املأها لاستبدالها
+  </p>
+  {{end}}
+  <button type="submit" class="btn-primary">حفظ العرض</button>
+  <a href="/promotions">إلغاء</a>
+</form>
+<script>
+(function(){
+  var typeSel=document.getElementById('otype');
+  var amount=document.querySelector('input[name="amount"]');
+  var hint=document.getElementById('priceHint');
+  function fmt(c){return (c/100).toFixed(2)+' ج.م';}
+  // Strict money parse, same rule as the sales screen (FIX-6 R6-L3):
+  // plain decimal, at most 2 decimals, no commas, no sign, no junk.
+  // An unparseable amount shows no preview instead of a silently
+  // rounded one ("10.005" used to preview as 10.01, "1,000" as 1.00).
+  function parseMoneyStrict(s){
+    s = String(s == null ? '' : s).replace(/ج\.م/g, '').trim();
+    if (s === '') return NaN;
+    if (!/^\d+(\.\d{1,2})?$/.test(s)) return NaN;
+    return Math.round(parseFloat(s) * 100);
+  }
+  function update(){
+    if(!typeSel||typeSel.value!=='product_price'){hint.hidden=true;return;}
+    var sel=document.querySelector('select[name="target_id"]');
+    var opt=sel&&sel.selectedOptions?sel.selectedOptions[0]:null;
+    if(!opt||!opt.value||opt.value==='0'){hint.hidden=true;return;}
+    var cur=parseInt(opt.getAttribute('data-price')||'0',10);
+    var txt='السعر الحالي: '+fmt(cur);
+    var amt=amount.value.trim();
+    if(amt){var v=parseMoneyStrict(amt);if(!isNaN(v)){txt+=' — سيُباع بـ '+fmt(v);}}
+    hint.textContent=txt;hint.hidden=false;
+  }
+  typeSel.addEventListener('change',update);
+  amount.addEventListener('input',update);
+  document.querySelectorAll('select[name="target_id"]').forEach(function(s){s.addEventListener('change',update);});
+  update();
+})();
+</script>
+{{template "chrome-bottom" .}}

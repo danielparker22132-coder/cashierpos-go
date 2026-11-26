@@ -1,0 +1,44 @@
+{{template "chrome-top" .}}
+<div class="auth-card">
+<h1>تسجيل الدخول</h1>
+<form method="post" action="/login" class="form" autocomplete="on">
+  <label>اسم المستخدم
+    <input name="username" required autofocus autocomplete="username"{{if .Data}} value="{{.Data.Username}}"{{end}}>
+  </label>
+  <label>كلمة المرور
+    <span class="pw-wrap">
+      <input type="password" name="password" required autocomplete="current-password" style="box-sizing:border-box;padding-inline-end:2.6em">
+      <button type="button" data-pw-eye title="إظهار كلمة المرور" aria-label="إظهار كلمة المرور" aria-pressed="false" class="pw-eye-btn">
+        {{template "icon-eye-open"}}
+        {{template "icon-eye-off"}}
+      </button>
+    </span>
+  </label>
+  <button type="submit" class="btn btn-primary">دخول</button>
+</form>
+<p class="hint">يوجد حساب مدير افتراضي — غيّر كلمة السر عند أول دخول</p>
+<p class="hint">عند إغلاق هذه الصفحة سيُسأل: «هل تريد الخروج من البرنامج؟» قبل الخروج</p>
+<p class="hint">{{template "icon-info"}} الفواتير تُحفظ محليًا فقط — المزامنة غير مفعلة بعد</p>
+</div>
+<script>
+(function(){
+  document.querySelectorAll('button[data-pw-eye]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var wrap = btn.closest('.pw-wrap');
+      var input = wrap ? wrap.querySelector('input') : null;
+      if(!input) return;
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+      var label = show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور';
+      btn.setAttribute('title', label);
+      btn.setAttribute('aria-label', label);
+      var open = btn.querySelector('.pw-eye-open');
+      var closed = btn.querySelector('.pw-eye-closed');
+      if(open) open.style.display = show ? 'none' : '';
+      if(closed) closed.style.display = show ? '' : 'none';
+    });
+  });
+})();
+</script>
+{{template "chrome-bottom" .}}

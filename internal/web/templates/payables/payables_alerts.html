@@ -1,0 +1,22 @@
+{{template "chrome-top" .}}
+<h1>تنبيهات المستحقات</h1>
+<p>المستحقات المفتوحة المستحقة خلال 30 يوماً أو المتأخرة — تظهر للمالك والكاشير المناوب</p>
+<p><a href="/payables">كل المستحقات</a></p>
+<table>
+  <thead><tr><th>النوع</th><th>الطرف</th><th>المتبقي</th><th>تاريخ الاستحقاق</th><th>الوصف</th><th>الحالة</th></tr></thead>
+  <tbody>
+  {{range .Data.Payables}}
+    <tr>
+      <td>{{if eq .Kind "vendor"}}مورد{{else}}مندوب{{end}}</td>
+      <td>{{.PartyName}}</td>
+      <td class="num">{{egp .Remaining}}</td>
+      <td class="num">{{.DueDate}}</td>
+      <td>{{.Description}}</td>
+      <td>{{if eq .Status "partial"}}مسدَّد جزئياً{{else}}مفتوح{{end}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد مستحقات قريبة أو متأخرة</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

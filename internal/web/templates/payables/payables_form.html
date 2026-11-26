@@ -1,0 +1,24 @@
+{{template "chrome-top" .}}
+<h1>مستحق يدوي جديد</h1>
+<form method="post" action="/payables/new" class="form">
+  <label>النوع
+    <select name="kind" id="kind">
+      <option value="vendor">مورد</option>
+      <option value="courier">مندوب</option>
+    </select>
+  </label>
+  <label>المورد (إذا كان النوع مورداً)
+    <select name="vendor_id">
+      <option value="">— اختر المورد —</option>
+      {{range .Data.Vendors}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label>اسم المندوب (إذا كان النوع مندوباً) <input name="party_name"></label>
+  <label>المبلغ (ج.م) * <input name="amount" inputmode="decimal" required></label>
+  <label>تاريخ الاستحقاق * <input type="date" name="due_date" required></label>
+  <label>الوصف <input name="description"></label>
+  <button type="submit" class="btn-primary">حفظ المستحق</button>
+  <a href="/payables">إلغاء</a>
+</form>
+<p class="hint">إنشاء المستحقات اليدوية للمدير فقط</p>
+{{template "chrome-bottom" .}}

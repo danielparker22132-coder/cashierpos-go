@@ -1,0 +1,24 @@
+{{template "chrome-top" .}}
+
+<h1>الحضور</h1>
+<form method="get" class="form" style="max-width:700px">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+<label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+<label>المستخدم <input name="user" value=""></label>
+<button type="submit">عرض</button>
+</div></form>
+<p>المتصلون الآن: {{.Data.OnlineNow}} {{if .Data.OnlineUsers}}({{range .Data.OnlineUsers}}{{.}} {{end}}){{end}} |
+إجمالي أيام الحضور: {{.Data.TotalDays}} | إجمالي مرات الدخول: {{.Data.TotalLogins}}</p>
+{{if .Data.PerUser}}<h2>ملخص لكل مستخدم</h2>
+<table><tr><th>المستخدم</th><th>أيام الحضور</th><th>مرات الدخول</th><th>أيام متصل</th></tr>
+{{range .Data.PerUser}}<tr><td>{{.UserName}}</td><td>{{.Days}}</td><td>{{.Logins}}</td><td>{{.OnlineDays}}</td></tr>{{end}}</table>{{end}}
+{{if .Data.Rows}}
+<table><tr><th>المستخدم</th><th>التاريخ</th><th>أول دخول</th><th>آخر خروج</th><th>مرات الدخول</th><th>الحالة</th></tr>
+{{range .Data.Rows}}<tr>
+<td>{{.UserName}}</td><td>{{.LogDate}}</td><td>{{.FirstLoginTime}}</td><td>{{.LastLogoutTime}}</td><td>{{.LoginCount}}</td>
+<td>{{if .IsOnline}}<b>متصل الآن</b>{{else}}غير متصل{{end}}</td>
+</tr>{{end}}</table>
+{{else}}<p>لا توجد سجلات حضور في الفترة</p>{{end}}
+
+{{template "chrome-bottom" .}}

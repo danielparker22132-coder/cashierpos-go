@@ -1,0 +1,67 @@
+{{template "chrome-top" .}}
+<h1>فاتورة شراء جديدة</h1>
+<form method="post" action="/purchases/new" class="form">
+  <label>المورد *
+    <select name="vendor_id" required>
+      <option value="">— اختر المورد —</option>
+      {{range .Data.Vendors}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label>تاريخ الاستحقاق (اختياري) <input type="date" name="due_date"></label>
+  <h2>الأصناف (صنف واحد على الأقل — الكمية &gt; 0 وسعر الشراء &gt; 0)</h2>
+  <table>
+    <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الشراء (ج.م)</th><th>رقم التشغيلة</th><th>تاريخ الصلاحية</th></tr></thead>
+    <tbody>
+    <tr>
+      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="qty" inputmode="decimal" size="6" placeholder="مثال 2.5"></td>
+      <td><input name="price" inputmode="decimal" size="8" placeholder="مثال 12.50"></td>
+      <td><input name="batch" size="8"></td>
+      <td><input type="date" name="expiry"></td>
+    </tr>
+    <tr>
+      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="qty" inputmode="decimal" size="6"></td>
+      <td><input name="price" inputmode="decimal" size="8"></td>
+      <td><input name="batch" size="8"></td>
+      <td><input type="date" name="expiry"></td>
+    </tr>
+    <tr>
+      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="qty" inputmode="decimal" size="6"></td>
+      <td><input name="price" inputmode="decimal" size="8"></td>
+      <td><input name="batch" size="8"></td>
+      <td><input type="date" name="expiry"></td>
+    </tr>
+    <tr>
+      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="qty" inputmode="decimal" size="6"></td>
+      <td><input name="price" inputmode="decimal" size="8"></td>
+      <td><input name="batch" size="8"></td>
+      <td><input type="date" name="expiry"></td>
+    </tr>
+    <tr>
+      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="qty" inputmode="decimal" size="6"></td>
+      <td><input name="price" inputmode="decimal" size="8"></td>
+      <td><input name="batch" size="8"></td>
+      <td><input type="date" name="expiry"></td>
+    </tr>
+    </tbody>
+  </table>
+  <label>المدفوع عند الاستلام (ج.م — 0 إذا لم يُدفع شيء)
+    <input name="paid" inputmode="decimal" value="0.00">
+  </label>
+  <label>طريقة الدفع
+    <select name="method">
+      <option value="Cash">كاش</option>
+      <option value="Visa">فيزا</option>
+      <option value="Vodafone Cash">فودافون كاش</option>
+    </select>
+  </label>
+  <label>ملاحظات <input name="notes"></label>
+  <button type="submit" class="btn-primary">حفظ فاتورة الشراء</button>
+  <a href="/vendors">إلغاء</a>
+</form>
+<p class="hint">الدفع النقدي يتطلب شيفتاً مفتوحاً ولا يتجاوز رصيد الدرج. تحديث سعر الشراء للمنتج للمدير فقط</p>
+{{template "chrome-bottom" .}}

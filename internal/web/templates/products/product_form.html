@@ -1,0 +1,37 @@
+{{template "chrome-top" .}}
+{{$p := index .Data "product"}}
+{{$isNew := index .Data "isNew"}}
+<h1>{{if $isNew}}منتج جديد{{else}}تعديل منتج: {{$p.Name}}{{end}}</h1>
+<p class="hint">قاعدة الأسعار: كل الأسعار أكبر من صفر، والترتيب: سعر الشراء ≤ جملة الجملة ≤ الجملة ≤ القطاعي. المنتج الوزني يتطلب PLU رقميًا فريدًا وسعر كيلو أكبر من صفر</p>
+<form method="post" class="form" style="max-width:640px">
+  <label>اسم المنتج * <input name="name" required value="{{if $p}}{{$p.Name}}{{end}}"></label>
+  <label>الباركود <input name="barcode" value="{{if $p}}{{$p.Barcode}}{{end}}" placeholder="فارغ = بلا باركود"></label>
+  <label>الفئة <input name="category" value="{{if $p}}{{$p.Category}}{{end}}"></label>
+  <label>المورد <input name="supplier" value="{{if $p}}{{$p.Supplier}}{{end}}"></label>
+  <label>سعر الشراء (ج.م) * <input name="buy_price" required value="{{if $p}}{{index $.Data "buy_price"}}{{end}}"></label>
+  <label>سعر جملة الجملة (ج.م) * <input name="bulk_price" required value="{{if $p}}{{index $.Data "bulk_price"}}{{end}}"></label>
+  <label>سعر الجملة (ج.م) * <input name="wholesale_price" required value="{{if $p}}{{index $.Data "wholesale_price"}}{{end}}"></label>
+  <label>سعر القطاعي (ج.م) * <input name="retail_price" required value="{{if $p}}{{index $.Data "retail_price"}}{{end}}"></label>
+  <label>الكمية <input name="quantity" value="{{if $p}}{{qty $p.Quantity}}{{else}}0{{end}}"></label>
+  <label>الحد الأدنى للكمية <input name="min_quantity" value="{{if $p}}{{qty $p.MinQuantity}}{{else}}5{{end}}"></label>
+  <label>الوحدة <input name="unit" value="{{if $p}}{{$p.Unit}}{{else}}قطعة{{end}}"></label>
+  <label>تاريخ الصلاحية <input name="expiry_date" placeholder="YYYY-MM-DD" value="{{if $p}}{{$p.ExpiryDate}}{{end}}"></label>
+  <label>رقم التشغيلة <input name="batch_number" value="{{if $p}}{{$p.BatchNumber}}{{end}}"></label>
+  <label>أيام تنبيه الصلاحية <input name="expiry_alert_days" value="{{if $p}}{{$p.ExpiryAlertDays}}{{else}}30{{end}}"></label>
+  <label><input type="checkbox" name="is_expiry_tracked" value="1" {{if $p}}{{if $p.IsExpiryTracked}}checked{{end}}{{end}}> تتبّع الصلاحية</label>
+  <label><input type="checkbox" name="is_weighted" value="1" {{if $p}}{{if $p.IsWeighted}}checked{{end}}{{end}}> منتج وزني (ميزان)</label>
+  <label>كود الميزان PLU <input name="scale_plu" value="{{if $p}}{{$p.ScalePLU}}{{end}}"></label>
+  <label>سعر الكيلو (ج.م) <input name="price_per_kg" value="{{if $p}}{{index $.Data "price_per_kg"}}{{end}}"></label>
+  <label>نوع باركود الميزان
+    <select name="scale_barcode_type">
+      <option value="WeightEmbedded" {{if $p}}{{if eq $p.ScaleBarcodeType "WeightEmbedded"}}selected{{end}}{{end}}>يحتوي الوزن</option>
+      <option value="PriceEmbedded" {{if $p}}{{if eq $p.ScaleBarcodeType "PriceEmbedded"}}selected{{end}}{{end}}>يحتوي السعر</option>
+    </select>
+  </label>
+  <label><input type="checkbox" name="scale_enabled" value="1" {{if $p}}{{if $p.ScaleEnabled}}checked{{end}}{{end}}> الميزان مفعّل لهذا الصنف</label>
+  <label>بادئة ميزان خاصة (اختياري) <input name="scale_prefix_override" value="{{if $p}}{{$p.ScalePrefixOverride}}{{end}}"></label>
+  {{if not $isNew}}<label><input type="checkbox" name="is_active" value="1" {{if $p}}{{if $p.IsActive}}checked{{end}}{{end}}> مفعّل</label>{{end}}
+  <button type="submit" class="btn-primary">حفظ</button>
+  <a href="/products">إلغاء</a>
+</form>
+{{template "chrome-bottom" .}}

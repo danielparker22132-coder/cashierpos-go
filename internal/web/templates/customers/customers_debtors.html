@@ -1,0 +1,21 @@
+{{template "chrome-top" .}}
+<h1>قائمة المدينين</h1>
+<p><a href="/customers">كل العملاء</a></p>
+<table>
+  <thead><tr><th>الاسم</th><th>الرصيد الحي</th><th>عدد الفواتير المفتوحة</th><th>آخر شراء</th><th>آخر سداد</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Debtors}}
+    <tr>
+      <td><a href="/customers/{{.Customer.ID}}">{{.Customer.Name}}</a></td>
+      <td class="num">{{egp .Customer.Balance}}</td>
+      <td class="num">{{.OpenInvoices}}</td>
+      <td class="num">{{.LastPurchase}}</td>
+      <td class="num">{{.LastPayment}}</td>
+      <td><a href="/customers/{{.Customer.ID}}/statement">كشف حساب</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا يوجد مدينون — كل الأرصدة صفر</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

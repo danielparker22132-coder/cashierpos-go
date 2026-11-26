@@ -1,0 +1,11 @@
+{{template "chrome-top" .}}
+{{if .Data.IsNew}}<h1>دين مندوب جديد</h1>{{else}}<h1>تعديل دين مندوب</h1>{{end}}
+<form method="post"{{if .Data.IsNew}} action="/courier-debts/new"{{else}} action="/courier-debts/{{.Data.Debt.ID}}/edit"{{end}} class="form">
+  <label>اسم المندوب * <input name="courier_name" required{{if .Data.Debt}} value="{{.Data.Debt.CourierName}}"{{end}}></label>
+  <label>المبلغ (ج.م) * <input name="amount" inputmode="decimal" required{{if .Data.Debt}} value="{{.Data.AmountEGP}}"{{end}}></label>
+  <label>مرجع الطلب <input name="order_ref"{{if .Data.Debt}} value="{{.Data.Debt.OrderRef}}"{{end}}></label>
+  <label>رقم الفاتورة (اختياري) <input name="invoice_number" inputmode="numeric"{{if and .Data.Debt .Data.Debt.InvoiceNumber.Valid}} value="{{.Data.Debt.InvoiceNumber.Int64}}"{{end}}></label>
+  <button type="submit" class="btn-primary">حفظ</button>
+  <a href="/courier-debts">إلغاء</a>
+</form>
+{{template "chrome-bottom" .}}

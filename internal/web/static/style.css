@@ -1,0 +1,264 @@
+/* CashierPOS Go — Arabic RTL, no external libraries (no CDN).
+   Theme (2026-11-25, jony's call after seeing the screenshots): the warm
+   cream/brown ramp is gone. Direction from the PyQt build he approved —
+   qtshadcn LIGHT with WHITE button faces ("خليها بيضه"): calm zinc
+   neutrals, one orange accent, clear contrast. Buttons are white with dark
+   text and a visible border in both modes (dark: light #e5e5e5 faces on
+   near-black, as in PyQt). The accent NEVER fills a button; it marks
+   links, the active nav item, focus rings, and the one number that
+   matters. The primary action reads as primary through its accent
+   outline, bold label, and (in the POS) its width. The header follows
+   the theme (white in light mode, dark only in dark mode). Navigation
+   is quiet neutral text.
+   Spacing on a 4px grid, weights 400/500/600 only, radii nested
+   (controls 8, cards 12, panels 12-16).
+   Contrast (light): text #171717 on #ffffff ~17:1; muted #71717a on
+   #ffffff 4.83:1; accent #b45309 as text 5.02:1, hover #8f4406 7.01:1;
+   primary #171717 on #ffffff ~17:1, accent outline #b45309 5.02:1.
+   Contrast (dark): text #fafafa on #09090b ~19:1; muted #a1a1aa ~7:1;
+   button text #171717 on #e5e5e5 ~15:1; accent #fb923c ~7.5:1;
+   primary #171717 on #e5e5e5 ~15:1, accent outline #fb923c ~7.5:1. */
+*{box-sizing:border-box}
+:root{
+  --bg:#f5f5f5; --surface:#ffffff; --surface-muted:#fafafa;
+  --text:#171717; --secondary:#52525b; --muted:#71717a;
+  --border:#e5e5e5; --border-strong:#d4d4d8;
+  --accent:#b45309; --accent-hover:#8f4406; --accent-text:#ffffff;
+  --link:#b45309;
+  --ok-bg:#f0fdf4; --ok-text:#166534; --ok-border:#bbf7d0;
+  --err-bg:#fef2f2; --err-text:#991b1b; --err-border:#fecaca;
+  --warn-bg:#fffbeb; --warn-text:#92400e; --warn-border:#fde68a;
+  --header-bg:#ffffff; --header-text:#171717; --header-muted:#71717a; --header-link:#b45309;
+  --shadow:0 1px 2px rgba(0,0,0,.06);
+  --ease:cubic-bezier(0.22,1,0.36,1);
+}
+body.dark{
+  --bg:#09090b; --surface:#18181b; --surface-muted:#27272a;
+  --text:#fafafa; --secondary:#d4d4d8; --muted:#a1a1aa;
+  --border:#27272a; --border-strong:#3f3f46;
+  --accent:#fb923c; --accent-hover:#fdba74; --accent-text:#18181b;
+  --link:#fb923c;
+  --ok-bg:#052e16; --ok-text:#86efac; --ok-border:#14532d;
+  --err-bg:#450a0a; --err-text:#fca5a5; --err-border:#7f1d1d;
+  --warn-bg:#451a03; --warn-text:#fcd34d; --warn-border:#78350f;
+  --header-bg:#18181b; --header-text:#fafafa; --header-muted:#a1a1aa; --header-link:#fdba74;
+  --shadow:none;
+}
+html,body{margin:0;padding:0}
+body{
+  font-family:system-ui,"Segoe UI",Tahoma,Arial,sans-serif;
+  background:var(--bg); color:var(--text);
+  direction:rtl; line-height:1.6; font-size:16px;
+  font-variant-numeric:tabular-nums;
+}
+a{color:var(--link)}
+a:hover{text-decoration:underline}
+::selection{background:var(--accent);color:var(--accent-text)}
+
+/* ---- Icons: one set, 18px, stroke 1.5, currentColor ---- */
+.icon,.pw-eye-open,.pw-eye-closed{width:18px;height:18px;flex:none;vertical-align:-3px}
+a .icon,button .icon,.btn .icon{vertical-align:-4px}
+
+/* ---- Header ---- */
+header.topbar{
+  display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;
+  background:var(--header-bg); color:var(--header-text); padding:12px 20px;
+  border-bottom:1px solid var(--border);
+}
+header .brand{font-weight:600;font-size:20px}
+header .userbox{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:14px}
+header .username{display:inline-flex;align-items:center;gap:8px}
+header .role{color:var(--header-muted)}
+header a{color:var(--header-link);text-decoration:none;font-weight:600}
+header a:hover{text-decoration:underline}
+/* Bells: quiet text + mono count, never a filled pill. */
+.bell-link{
+  display:inline-flex;align-items:center;gap:8px;
+  color:var(--header-text);text-decoration:none;font-weight:500;font-size:14px;
+}
+.bell-link:hover{color:var(--header-text);text-decoration:underline}
+.bells .bell-link{color:var(--secondary)}
+.bells .bell-link:hover{color:var(--text)}
+.bells{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 16px}
+.count{
+  font-family:ui-monospace,Consolas,monospace;
+  font-variant-numeric:tabular-nums;font-weight:500;
+}
+.evidence-badge{color:var(--err-text);font-weight:600}
+
+/* ---- Nav: quiet neutral links, one line at 1280px (nowrap + scroll
+   fallback so no item is ever orphaned on a second line); the accent
+   marks only the active link. ---- */
+nav.mainnav{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:8px 12px;display:flex;gap:4px 8px;flex-wrap:nowrap;overflow-x:auto;
+}
+nav.mainnav a{color:var(--text);text-decoration:none;font-weight:500;font-size:14px;padding:4px 6px;border-radius:8px;white-space:nowrap}
+nav.mainnav a:hover{background:var(--surface-muted);text-decoration:none}
+nav.mainnav a.active{color:var(--accent);background:var(--surface-muted);outline:2px solid var(--accent);outline-offset:-2px}
+
+/* ---- Layout ---- */
+main{max-width:1100px;margin:0 auto;padding:20px}
+h1{margin:0 0 12px;font-size:28px;line-height:1.15;font-weight:500}
+h2{font-size:20px;font-weight:500}
+h3{font-size:16px;font-weight:600}
+footer{text-align:center;color:var(--muted);padding:16px;font-size:12px;border-top:1px solid var(--border);margin-top:24px}
+.hint{color:var(--muted);font-size:14px}
+.num{
+  direction:ltr;unicode-bidi:embed;white-space:nowrap;
+  font-family:ui-monospace,Consolas,monospace;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ---- Alerts ---- */
+.alert{
+  display:flex;gap:8px;align-items:flex-start;
+  padding:12px 16px;margin:12px 20px;border-radius:8px;border:1px solid transparent;
+}
+.alert .icon{margin-top:2px}
+.alert.err{background:var(--err-bg);color:var(--err-text);border-color:var(--err-border)}
+.alert.ok{background:var(--ok-bg);color:var(--ok-text);border-color:var(--ok-border)}
+.alert.warn{background:var(--warn-bg);color:var(--warn-text);border-color:var(--warn-border)}
+.alert a{font-weight:600}
+main .alert{margin:12px 0}
+
+/* ---- Forms & buttons ----
+   White buttons (jony's PyQt decision): white face, dark text, visible
+   border in both modes. The primary action alone carries the accent
+   outline so it reads as primary; secondary actions stay quiet white. */
+.form{display:flex;flex-direction:column;gap:12px;max-width:480px}
+.form label{display:flex;flex-direction:column;gap:4px;font-weight:600}
+input,select,textarea{
+  padding:12px;border:1px solid var(--border-strong);border-radius:8px;font-size:16px;
+  background:var(--surface);color:var(--text);font-family:inherit;width:100%;
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+button,.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:12px 20px;background:#ffffff;color:#171717;
+  border:1px solid var(--border-strong);border-radius:8px;font-size:16px;cursor:pointer;font-weight:600;
+  text-decoration:none;text-align:center;font-family:inherit;min-height:44px;
+  transition:background-color 150ms var(--ease),opacity 150ms var(--ease),border-color 150ms var(--ease),color 150ms var(--ease);
+}
+body.dark button,body.dark .btn{background:#e5e5e5;color:#171717;border-color:#e5e5e5}
+button:hover,.btn:hover{background:#f5f5f5;color:#171717;text-decoration:none}
+body.dark button:hover,body.dark .btn:hover{background:#f5f5f5}
+button:focus-visible,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn-primary{background:#ffffff;color:#171717;border:2px solid var(--accent)}
+.btn-primary:hover{background:#f5f5f5;color:#171717;border-color:var(--accent-hover)}
+body.dark .btn-primary{background:#e5e5e5;color:#171717;border-color:var(--accent)}
+body.dark .btn-primary:hover{background:#f5f5f5;color:#171717;border-color:var(--accent-hover)}
+.btn-secondary{background:#ffffff;color:#171717}
+body.dark .btn-secondary{background:#e5e5e5;color:#171717}
+.btn-danger{background:#ffffff;color:#991b1b;border-color:#fca5a5}
+.btn-danger:hover{background:#fef2f2;color:#991b1b}
+body.dark .btn-danger{background:#e5e5e5;color:#991b1b;border-color:#e5e5e5}
+body.dark .btn-danger:hover{background:#f5f5f5}
+.btn-small{padding:8px 16px;font-size:14px;min-height:40px}
+.auth-card,.error-card{
+  max-width:520px;margin:24px auto;background:var(--surface);
+  border:1px solid var(--border);border-radius:12px;padding:24px;box-shadow:var(--shadow);
+}
+.error-card{max-width:640px}
+.error-text{font-size:16px}
+.error-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+/* Password eye toggle: 18px icon, positioned inside the field. */
+.pw-wrap{position:relative;display:block}
+.pw-wrap input{box-sizing:border-box;padding-inline-end:2.6em}
+.pw-eye-btn{
+  position:absolute;inset-inline-end:8px;top:50%;transform:translateY(-50%);
+  background:none;border:0;cursor:pointer;padding:4px;line-height:0;color:inherit;
+}
+.pw-eye-btn:hover{background:none}
+
+/* ---- POS (sales) ----
+   One row per step, in order: who pays, what goes in, what is in the cart,
+   what is paid, one totals card, one fixed actions bar. */
+.pos-form{max-width:100%}
+.pos-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.pos-add{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.pos-add label{flex:1 1 220px;min-width:200px}
+.pos-add input,.pos-add select{min-height:48px}
+.pos-add button{flex:none;min-height:48px}
+.cart-table td.num,.cart-table th.num{text-align:left}
+.cart-input{width:96px;padding:8px 12px}
+.pos-pay{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.pos-checks{display:flex;gap:8px 24px;flex-wrap:wrap;align-items:center}
+.pos-checks label{flex-direction:row;align-items:center;gap:8px;font-weight:500}
+.pos-checks input[type="checkbox"]{width:auto}
+.totals-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:16px 20px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:12px 20px;margin:12px 0 96px;box-shadow:var(--shadow);
+}
+.totals-item{display:flex;flex-direction:column;gap:2px}
+.totals-label{color:var(--muted);font-size:14px}
+.totals-value{font-size:28px;font-weight:600;line-height:1.2}
+.totals-value.net{color:var(--accent)}
+.totals-promo{grid-column:1/-1}
+.pos-actions{
+  position:sticky;bottom:0;z-index:1;display:flex;gap:12px;flex-wrap:wrap;
+  background:var(--surface);border-top:1px solid var(--border);
+  padding:12px 0;margin-top:16px;
+}
+.pos-actions .btn-primary{flex:1 1 200px}
+
+/* ---- Hub ---- */
+.hub-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.clock{
+  font-family:ui-monospace,Consolas,monospace;font-size:16px;font-weight:600;
+  font-variant-numeric:tabular-nums;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:8px 16px;direction:ltr;white-space:nowrap;
+}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+.summary-box{
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:16px 20px;display:flex;flex-direction:column;box-shadow:var(--shadow);
+}
+.summary-label{color:var(--muted);font-size:14px}
+.summary-value{font-size:28px;font-weight:500;line-height:1.2}
+.hub{display:grid;grid-template-columns:repeat(auto-fill,minmax(192px,1fr));gap:12px;margin-top:12px}
+.card{
+  display:flex;flex-direction:column;gap:4px;align-items:center;
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:20px 12px;text-align:center;text-decoration:none;color:var(--text);
+  font-weight:600;box-shadow:var(--shadow);
+  transition:border-color 150ms var(--ease),background-color 150ms var(--ease);
+}
+.card:hover{border-color:var(--accent);text-decoration:none}
+.card-icon{display:flex;color:var(--muted)}
+.card-title{font-size:16px}
+.card-desc{font-size:12px;font-weight:400;color:var(--muted)}
+
+/* ---- Tables ---- */
+table{width:100%;border-collapse:collapse;background:var(--surface);margin:12px 0}
+th,td{border:1px solid var(--border);padding:8px 12px;text-align:right;vertical-align:top}
+th{background:var(--surface-muted);font-weight:600}
+td.num,th.num{white-space:nowrap}
+tbody tr:nth-child(even){background:var(--surface-muted)}
+body.dark tbody tr:nth-child(even){background:#1f1f23}
+tbody tr:hover{background:var(--surface-muted)}
+tr.low-stock{background:var(--err-bg)}
+.low-stock-text{color:var(--err-text);font-weight:600}
+.state-yes{color:var(--ok-text)}
+.state-no{color:var(--err-text)}
+.state-new{color:var(--accent);font-weight:600}
+.promo-target{border:1px solid var(--border);border-radius:8px;padding:8px;margin:4px 0}
+.table-wrap{overflow-x:auto}
+
+/* ---- Responsive ---- */
+@media (max-width:640px){
+  main{padding:12px}
+  h1{font-size:20px}
+  header.topbar{flex-direction:column;align-items:flex-start}
+  nav.mainnav{padding:8px 12px;gap:4px 8px}
+  .hub{grid-template-columns:repeat(2,1fr)}
+  .clock{font-size:16px}
+  .auth-card,.error-card{margin:12px auto;padding:16px}
+  .pos-meta{grid-template-columns:1fr}
+  .pos-pay{grid-template-columns:1fr}
+  .totals-card{grid-template-columns:repeat(2,1fr)}
+  .pos-actions{flex-direction:column}
+  .pos-actions button,.pos-actions .btn{width:100%}
+}

@@ -1,0 +1,54 @@
+{{template "chrome-top" .}}
+<h1>شيفت #{{.Data.Shift.ID}} — {{.Data.Shift.UserName}}</h1>
+<p>التاريخ: {{.Data.Shift.ShiftDate}} — الحالة: {{.Data.Shift.Status}} — الجلسات: {{.Data.Shift.SessionCount}}</p>
+{{if .Data.Summary}}
+<table>
+  <thead><tr><th>البند</th><th>القيمة</th></tr></thead>
+  <tbody>
+    <tr><td>رصيد الافتتاح</td><td class="num">{{egp .Data.Summary.OpeningBalance}}</td></tr>
+    <tr><td>مبيعات نقدية</td><td class="num">{{egp .Data.Summary.CashSales}}</td></tr>
+    <tr><td>نقد محتفظ به من فواتير ملغاة</td><td class="num">{{egp .Data.Summary.RetainedCanceledCash}}</td></tr>
+    <tr><td>مبيعات فيزا</td><td class="num">{{egp .Data.Summary.VisaSales}}</td></tr>
+    <tr><td>مبيعات فودافون كاش</td><td class="num">{{egp .Data.Summary.VodafoneSales}}</td></tr>
+    <tr><td>تحصيل مديونية نقدي</td><td class="num">{{egp .Data.Summary.CashDebtCollection}}</td></tr>
+    <tr><td>إضافات للدرج</td><td class="num">{{egp .Data.Summary.CashIn}}</td></tr>
+    <tr><td>مرتجعات نقدية</td><td class="num">{{egp .Data.Summary.CashReturns}}</td></tr>
+    <tr><td>سحوبات من الدرج</td><td class="num">{{egp .Data.Summary.CashOut}}</td></tr>
+    <tr><td>مصروفات</td><td class="num">{{egp .Data.Summary.ExpensesTotal}}</td></tr>
+    <tr><td>سداد مورد نقدي</td><td class="num">{{egp .Data.Summary.VendorCashPaid}}</td></tr>
+    <tr><td>إجمالي المبيعات</td><td class="num">{{egp .Data.Summary.TotalSales}}</td></tr>
+    <tr><td><strong>الرصيد المتوقع في الدرج</strong></td><td class="num"><strong>{{egp .Data.Summary.ExpectedBalance}}</strong></td></tr>
+  </tbody>
+</table>
+{{end}}
+{{if .Data.Shift.Notes}}<p>ملاحظات: {{.Data.Shift.Notes}}</p>{{end}}
+{{if .Data.Shift.IsOpen}}
+<form method="post" action="/shifts/close" class="form inline" onsubmit="return confirm('هل أنت متأكد من إغلاق الشيفت الآن؟')">
+  <input type="hidden" name="shift_id" value="{{.Data.Shift.ID}}">
+  <button type="submit" class="btn btn-primary">{{template "icon-lock"}} إغلاق الشيفت</button>
+</form>
+{{end}}
+<h2>حركات الدرج</h2>
+<table>
+  <thead><tr><th>الوقت</th><th>النوع</th><th>المبلغ</th><th>السبب</th></tr></thead>
+  <tbody>
+  {{range .Data.Movements}}
+    <tr><td>{{.MovementDate}}</td><td>{{.MovementType}}</td><td class="num">{{egp .Amount}}</td><td>{{.Reason}}</td></tr>
+  {{else}}
+    <tr><td colspan="4">لا توجد حركات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<h2>عدّ الدرج</h2>
+<table>
+  <thead><tr><th>المعدود</th><th>المتوقع</th><th>الفرق</th><th>الحالة</th><th>المراجعة</th></tr></thead>
+  <tbody>
+  {{range .Data.CashCounts}}
+    <tr><td class="num">{{egp .AmountCounted}}</td><td class="num">{{egp .ExpectedAmount}}</td><td class="num">{{egp .Difference}} ({{.DifferenceStatus}})</td><td>{{if eq .ReviewStatus "approved"}}معتمد{{else if eq .ReviewStatus "rejected"}}مرفوض{{else}}قيد الانتظار{{end}}</td><td>{{.ReviewedBy}} {{.ReviewedAt}}</td></tr>
+  {{else}}
+    <tr><td colspan="5">لم يُسجَّل عدّ لهذا الشيفت</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p><a class="btn" href="/shifts">رجوع للشيفت</a></p>
+{{template "chrome-bottom" .}}

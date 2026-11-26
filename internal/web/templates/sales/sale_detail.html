@@ -1,0 +1,75 @@
+{{template "chrome-top" .}}
+{{$inv := index .Data "invoice"}}
+<h1>فاتورة رقم {{$inv.Summary.Number}}</h1>
+<p>
+  العميل: <b>{{$inv.Summary.CustomerName}}</b> |
+  النوع: {{$inv.Summary.SaleType}} |
+  طريقة الدفع: {{$inv.Summary.PaymentMethod}} |
+  البائع: {{$inv.Summary.UserName}} |
+  التاريخ: {{$inv.Summary.Date}} |
+  الحالة: {{if $inv.Summary.IsCanceled}}<b>ملغاة</b>{{else}}سارية{{end}}
+  {{if $inv.Summary.HasReturns}} — بها مرتجع{{end}}
+</p>
+{{if $inv.Summary.IsCanceled}}<p>أُلغيت بواسطة {{$inv.CanceledBy}} في {{$inv.CanceledAt}} — السبب: {{$inv.CancelReason}}</p>{{end}}
+{{if $inv.Notes}}<p>ملاحظات: {{$inv.Notes}}</p>{{end}}
+
+<table>
+  <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>خصم الصنف</th><th>خصم العرض</th><th>مجاني</th><th>الإجمالي</th></tr></thead>
+  <tbody>
+  {{range $ln := $inv.Lines}}
+    <tr>
+      <td>{{$ln.ProductName}}{{if $ln.IsWeighted}} (وزني){{end}}</td>
+      <td class="num">{{qty $ln.Qty}}</td>
+      <td class="num">{{if approxSaleLine $ln.UnitPrice $ln.Qty $ln.TotalPrice $ln.ItemDiscount}}≈{{end}}{{egp $ln.UnitPrice}}</td>
+      <td class="num">{{egp $ln.ItemDiscount}}</td>
+      <td class="num">{{egp $ln.PromoDiscount}}</td>
+      <td class="num">{{qty $ln.FreeQty}}</td>
+      <td class="num">{{egp $ln.TotalPrice}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<p>
+  الإجمالي: <b>{{egp $inv.Summary.Total}}</b> |
+  خصم يدوي: <b>{{egp $inv.Summary.Discount}}</b> |
+  خصم العروض: <b>{{egp $inv.Summary.PromoDiscount}}</b> |
+  الصافي: <b>{{egp $inv.Summary.Net}}</b> |
+  المدفوع: <b>{{egp $inv.Summary.Paid}}</b> |
+  المتبقي: <b>{{egp $inv.Summary.Remaining}}</b>
+</p>
+{{if index .Data "canViewProfit"}}<p>الربح: <b>{{egp (index .Data "profit")}}</b></p>{{end}}
+
+{{if $inv.Offers}}
+<h2>العروض المطبقة</h2>
+<ul>
+{{range $o := $inv.Offers}}<li>{{$o.Name}} — وفّر {{egp $o.Saved}}</li>{{end}}
+</ul>
+{{end}}
+
+<h2>المدفوعات</h2>
+<table>
+  <thead><tr><th>المبلغ</th><th>الطريقة</th><th>التاريخ</th><th>ملاحظات</th></tr></thead>
+  <tbody>
+  {{range $pay := $inv.Payments}}
+    <tr><td class="num">{{egp $pay.Amount}}</td><td>{{$pay.Method}}</td><td>{{$pay.Date}}</td><td>{{$pay.Notes}}</td></tr>
+  {{else}}
+    <tr><td colspan="4">لا توجد مدفوعات مسجلة</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<p>
+  <a href="/sales/{{$inv.Summary.ID}}/print">طباعة A4</a> |
+  <a href="/sales">عودة للمبيعات</a>
+</p>
+
+{{if and (index .Data "canCancel") (not $inv.Summary.IsCanceled)}}
+<h2>إلغاء الفاتورة</h2>
+<form method="post" action="/api/sales/{{$inv.Summary.ID}}/cancel" class="form" onsubmit="return confirm('هل أنت متأكد من إلغاء هذه الفاتورة؟ سيُعاد المخزون ويُعكس الدين ويُسترد المبلغ النقدي');">
+  <label>سبب الإلغاء (إلزامي) <input name="reason" required></label>
+  <button type="submit" class="btn-primary">إلغاء الفاتورة</button>
+</form>
+<p class="hint">ملاحظة: إلغاء فاتورة نقدية مدفوعة يسترد المبلغ النقدي بحركة صندوق «استرداد إلغاء فاتورة»؛ والمبالغ غير النقدية (فيزا/فودافون كاش) لم تدخل الدرج فلا حركة صندوق لها</p>
+{{end}}
+{{template "chrome-bottom" .}}

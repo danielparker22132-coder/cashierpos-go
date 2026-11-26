@@ -1,0 +1,44 @@
+{{template "chrome-top" .}}
+<h1>ديون المناديب</h1>
+<p>
+  {{if can .User "edit_courier_debts"}}<a class="btn btn-primary" href="/courier-debts/new">{{template "icon-plus"}} دين مندوب جديد</a>{{end}}
+</p>
+{{if not (can .User "edit_courier_debts")}}
+<p class="hint">دورك (كاشير) قراءة فقط في هذه الشاشة — التعديل والسداد والحذف للمدير/المشرف</p>
+{{end}}
+<table>
+  <thead><tr><th>اسم المندوب</th><th>المبلغ</th><th>مرجع الطلب</th><th>رقم الفاتورة</th><th>التاريخ</th><th>الحالة</th><th>سدّدها</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Debts}}
+    <tr>
+      <td>{{.CourierName}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td class="num">{{.OrderRef}}</td>
+      <td class="num">{{if .InvoiceNumber.Valid}}{{.InvoiceNumber.Int64}}{{end}}</td>
+      <td class="num">{{.CreatedAt}}</td>
+      <td>{{if eq .Status "paid"}}مسدَّد{{else}}مفتوح{{end}}</td>
+      <td>{{.PaidBy}} {{.PaidAt}}</td>
+      <td>
+        {{if can $.User "edit_courier_debts"}}
+          {{if ne .Status "paid"}}
+          <form method="post" action="/courier-debts/{{.ID}}/settle" class="form inline">
+            <input name="amount" inputmode="decimal" required size="8" placeholder="المبلغ">
+            <select name="method"><option value="Cash">كاش</option><option value="Visa">فيزا</option><option value="Vodafone Cash">فودافون كاش</option></select>
+            <button type="submit" class="btn-primary">سداد</button>
+          </form>
+          <a href="/courier-debts/{{.ID}}/edit">تعديل</a>
+          {{end}}
+          {{if ne .Status "paid"}}
+          <form method="post" action="/courier-debts/{{.ID}}/delete" style="display:inline" onsubmit="return confirm('هل تريد حذف دين هذا المندوب؟')">
+            <button type="submit">حذف</button>
+          </form>
+          {{end}}
+        {{end}}
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="8">لا توجد ديون مناديب</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

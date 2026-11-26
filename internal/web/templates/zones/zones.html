@@ -1,0 +1,13 @@
+{{template "chrome-top" .}}
+<h1>مناطق التوصيل</h1>
+<p class="hint">المناطق النشطة التي يُقبل التوصيل إليها. التوصيل لمكان محدد يتحكم فيه المدير من الإعدادات — لا توصيل مفتوح لكل الأماكن</p>
+{{if index .Data "Zones"}}
+<table>
+  <thead><tr><th>المنطقة</th><th>رسوم التوصيل</th></tr></thead>
+  <tbody>
+  {{range index .Data "Zones"}}<tr><td>{{.Name}}</td><td class="num">{{egp .FeeEGP}}</td></tr>{{end}}
+  </tbody>
+</table>
+{{else}}<p>لا توجد مناطق توصيل نشطة</p>{{end}}
+<p><a href="/">عودة للرئيسية</a></p>
+{{template "chrome-bottom" .}}

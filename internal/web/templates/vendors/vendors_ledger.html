@@ -1,0 +1,41 @@
+{{template "chrome-top" .}}
+<h1>دفتر أستاذ: {{.Data.Ledger.Vendor.Name}}</h1>
+<p>الرصيد الحالي: <strong class="num">{{egp .Data.Ledger.Vendor.CurrentBalance}}</strong></p>
+<p><button onclick="window.print()">{{template "icon-printer"}} طباعة</button> <a href="/vendors/{{.Data.Ledger.Vendor.ID}}">عودة للمورد</a></p>
+<h2>المشتريات</h2>
+<table>
+  <thead><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الاستحقاق</th></tr></thead>
+  <tbody>
+  {{range .Data.Ledger.Purchases}}
+    <tr>
+      <td class="num">{{.InvoiceNo}}</td>
+      <td class="num">{{.Date}}</td>
+      <td class="num">{{egp .Total}}</td>
+      <td class="num">{{egp .Paid}}</td>
+      <td class="num">{{egp .Remaining}}</td>
+      <td class="num">{{.DueDate}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد مشتريات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<h2>المدفوعات</h2>
+<table>
+  <thead><tr><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>الرصيد قبل</th><th>الرصيد بعد</th><th>ملاحظات</th></tr></thead>
+  <tbody>
+  {{range .Data.Ledger.Payments}}
+    <tr>
+      <td class="num">{{.Date}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td>{{.Method}}</td>
+      <td class="num">{{egp .BalanceBefore}}</td>
+      <td class="num">{{egp .BalanceAfter}}</td>
+      <td>{{.Notes}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد مدفوعات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

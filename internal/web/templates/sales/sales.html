@@ -1,0 +1,525 @@
+{{template "chrome-top" .}}
+<h1>المبيعات — نقطة البيع</h1>
+<p class="hint">البيع يتطلب شيفتًا مفتوحًا لنفس المستخدم في تاريخ اليوم. العميل النقدي يدفع كامل الصافي تلقائيًا</p>
+
+<h2>فاتورة جديدة</h2>
+<form method="post" action="/sales" id="pos-form" class="form pos-form">
+  <div class="pos-meta">
+    <label>العميل
+      <select name="customer_id" id="customer">
+        {{range $c := index .Data "customers"}}<option value="{{$c.id}}">{{$c.name}} ({{$c.phone}})</option>{{end}}
+      </select>
+    </label>
+    <label>نوع البيع
+      <select name="sale_type" id="sale-type">
+        <option value="retail">قطاعي</option>
+        <option value="wholesale">جملة</option>
+        <option value="bulk">جملة الجملة</option>
+      </select>
+    </label>
+    <label>طريقة الدفع
+      <select name="payment_method" id="pay-method">
+        <option value="Cash">كاش</option>
+        <option value="Visa">فيزا</option>
+        <option value="Vodafone Cash">فودافون كاش</option>
+      </select>
+    </label>
+  </div>
+  <div class="pos-add">
+    <label>باركود / بحث بالاسم
+      <input id="barcode" placeholder="باركود أو اسم المنتج" autocomplete="off">
+    </label>
+    <label>المنتج
+      <select id="product-pick">
+        <option value="">— اختر منتجًا —</option>
+        {{range $p := index .Data "products"}}<option value="{{$p.ID}}" data-price="{{$p.RetailPrice}}" data-name="{{$p.Name}}">{{$p.Name}} — {{egp $p.RetailPrice}} — مخزون: {{qty $p.Quantity}}</option>{{end}}
+      </select>
+    </label>
+    <button type="button" id="add-btn">إضافة</button>
+  </div>
+  <table id="cart" class="cart-table">
+    <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة (ج.م)</th><th>خصم الصنف (ج.م)</th><th>الإجمالي</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="cart-lines"></div>
+  <div class="pos-pay">
+    <label>خصم الفاتورة (ج.م) {{if not (index .Data "canDiscount")}}(غير مسموح لدورك — يُحفظ 0){{end}}
+      <input name="invoice_discount" id="inv-disc" value="0.00 ج.م" {{if not (index .Data "canDiscount")}}disabled{{end}}>
+    </label>
+    <label>المدفوع (ج.م)
+      <input name="paid" id="paid" value="0.00 ج.م">
+    </label>
+  </div>
+  <div class="pos-checks">
+    <label><input type="checkbox" name="allow_over_limit" value="1"> تجاوز حد الائتمان بموافقة المدير</label>
+    {{if index .Data "canBelowCost"}}<label><input type="checkbox" name="allow_below_cost" value="1" onclick="return confirm('السعر أقل من سعر الشراء — هل تريد البيع بخسارة؟')"> البيع بأقل من سعر الشراء (بيع بخسارة — بتأكيد صريح)</label>{{end}}
+  </div>
+  <label>ملاحظات <input name="notes"></label>
+  <div class="totals-card" aria-label="ملخص الفاتورة">
+    <div class="totals-item"><span class="totals-label">الإجمالي</span><b id="gross" class="num totals-value">0.00 ج.م</b></div>
+    <div class="totals-item"><span class="totals-label">الخصم</span><b id="disc-total" class="num totals-value">0.00 ج.م</b></div>
+    <div class="totals-item"><span class="totals-label">الصافي</span><b id="net" class="num totals-value net">0.00 ج.م</b></div>
+    <div class="totals-item"><span class="totals-label">المتبقي</span><b id="remaining" class="num totals-value">0.00 ج.م</b></div>
+    <div id="promo-box" class="hint totals-promo"></div>
+  </div>
+  <div class="pos-actions">
+    <button type="submit" class="btn-primary">حفظ الفاتورة (F3)</button>
+    <button type="button" class="btn" onclick="window.print()">طباعة</button>
+    <button type="button" class="btn" id="clear-btn" title="مسح أصناف الفاتورة الحالية">إلغاء</button>
+  </div>
+</form>
+
+<h2>فواتير اليوم</h2>
+<table>
+  <thead><tr><th>رقم الفاتورة</th><th>العميل</th><th>النوع</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>طريقة الدفع</th><th>البائع</th><th>الحالة</th><th></th></tr></thead>
+  <tbody>
+  {{range $inv := index .Data "invoices"}}
+    <tr>
+      <td class="num">{{$inv.Number}}</td>
+      <td>{{$inv.CustomerName}}</td>
+      <td>{{$inv.SaleType}}</td>
+      <td class="num">{{egp $inv.Net}}</td>
+      <td class="num">{{egp $inv.Paid}}</td>
+      <td class="num">{{egp $inv.Remaining}}</td>
+      <td>{{$inv.PaymentMethod}}</td>
+      <td>{{$inv.UserName}}</td>
+      <td>{{if $inv.IsCanceled}}ملغاة{{else}}سارية{{end}}{{if $inv.HasReturns}} — بها مرتجع{{end}}</td>
+      <td><a href="/sales/{{$inv.ID}}">عرض</a> | <a href="/sales/{{$inv.ID}}/print">طباعة</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="10">لا توجد فواتير اليوم بعد</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<script>
+(function(){
+  var cart = []; // {id, name, qty(milli), price(cents, weighted avg), disc(cents), parts:[[price,qty],...]}
+  // FIX-3 H3: the cart survives the auto-lock redirect. It is persisted
+  // in sessionStorage (same tab, so the lock redirect keeps it) together
+  // with the form fields, restored on /sales load, and cleared only
+  // after a successful save (see the submit handling below).
+  var cartKey = 'cashierpos_pos_cart';
+  var cartSubmittedKey = 'cashierpos_pos_cart_submitted';
+  // getElementsByName keeps the literal name="..." strings out of the
+  // page source, so a role-gated input stays textually absent for roles
+  // that lack it (a substring check on the rendered page must not trip
+  // on this script).
+  function namedInput(name){ var els = document.getElementsByName(name); return els.length ? els[0] : null; }
+  function cartFormState(){
+    var notesEl = namedInput('notes');
+    var overEl = namedInput('allow_over_limit');
+    var belowEl = namedInput('allow_below_cost');
+    return {
+      customer: document.getElementById('customer').value,
+      saleType: document.getElementById('sale-type').value,
+      payMethod: document.getElementById('pay-method').value,
+      invDisc: document.getElementById('inv-disc').value,
+      paid: document.getElementById('paid').value,
+      notes: notesEl ? notesEl.value : '',
+      allowOverLimit: overEl ? overEl.checked : false,
+      allowBelowCost: belowEl ? belowEl.checked : false
+    };
+  }
+  function saveCart(){
+    try {
+      sessionStorage.setItem(cartKey, JSON.stringify({cart: cart, form: cartFormState()}));
+    } catch (e) { /* storage unavailable (private mode, quota): the cart still works in memory */ }
+  }
+  function validCart(raw){
+    if (!raw || !Array.isArray(raw.cart)) return null;
+    if (raw.cart.length > 200) return null;
+    for (var i=0;i<raw.cart.length;i++){
+      var ln = raw.cart[i];
+      if (!ln || typeof ln.id !== 'number' || typeof ln.qty !== 'number' || typeof ln.price !== 'number' ||
+          typeof ln.disc !== 'number' || !Array.isArray(ln.parts)) return null;
+      for (var k=0;k<ln.parts.length;k++){
+        if (!Array.isArray(ln.parts[k]) || ln.parts[k].length !== 2 ||
+            typeof ln.parts[k][0] !== 'number' || typeof ln.parts[k][1] !== 'number') return null;
+      }
+      if (typeof ln.name !== 'string') ln.name = '';
+    }
+    return raw;
+  }
+  function restoreCart(){
+    var raw = null;
+    try { raw = JSON.parse(sessionStorage.getItem(cartKey) || 'null'); } catch (e) { raw = null; }
+    raw = validCart(raw);
+    if (!raw) return;
+    cart = raw.cart;
+    var f = raw.form || {};
+    function setVal(id, v){ var el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; }
+    setVal('customer', f.customer); setVal('sale-type', f.saleType); setVal('pay-method', f.payMethod);
+    setVal('inv-disc', f.invDisc); setVal('paid', f.paid);
+    var notesEl = namedInput('notes');
+    if (notesEl && f.notes !== undefined) notesEl.value = f.notes;
+    var overEl = namedInput('allow_over_limit');
+    if (overEl) overEl.checked = !!f.allowOverLimit;
+    var belowEl = namedInput('allow_below_cost');
+    if (belowEl) belowEl.checked = !!f.allowBelowCost;
+  }
+  function clearSavedCart(){
+    try { sessionStorage.removeItem(cartKey); sessionStorage.removeItem(cartSubmittedKey); } catch (e) {}
+  }
+  // A plain form POST cannot tell this script whether the save succeeded:
+  // success redirects away to /sales/{id}, failure re-renders this page
+  // with an error alert. So submit only marks the cart as submitted; the
+  // next load of /sales clears it when there is no error, and restores it
+  // when the save failed and the page shows the error.
+  function markCartSubmitted(){
+    try { sessionStorage.setItem(cartSubmittedKey, '1'); } catch (e) {}
+  }
+  (function initSavedCart(){
+    var submitted = false;
+    try { submitted = sessionStorage.getItem(cartSubmittedKey) === '1'; } catch (e) {}
+    if (submitted) {
+      try { sessionStorage.removeItem(cartSubmittedKey); } catch (e) {}
+      if (!document.querySelector('.alert.err')) { clearSavedCart(); return; }
+    }
+    restoreCart();
+  })();
+  // FIX-3 duplicate rule (jony 2026-11-25): one cart row per product,
+  // even at different prices. parts keep each addition's own price so
+  // the posted form (and the preview) carry the exact amounts; the
+  // row total is the exact sum of the parts, and the displayed price
+  // is their weighted average.
+  function rowGross(ln){ var g=0; ln.parts.forEach(function(pt){ g += Math.round(pt[0]*pt[1]/1000); }); return g; }
+  function rowAvg(ln){ return ln.qty>0 ? Math.round(rowGross(ln)*1000/ln.qty) : 0; }
+  // Largest-remainder apportionment (FIX-7 R7-L2): scale each part's
+  // quantity pro-rata to a new row total, keeping each part's own
+  // price. Floors first, then the leftover millis go to the largest
+  // remainders, so the part quantities always sum to newQty exactly
+  // and each part stays within 1 milli of its exact share.
+  // KNOWN LIMIT (FIX-8 R8-L1, re-measured FIX-9 R9-L4): scaling
+  // down floors parts to zero qty and loses the price split, so
+  // scaling back up cannot recover it exactly — but that zeroing is
+  // only the extreme case. The general drift is per-part milli
+  // rounding (every part lands within 1 milli of its exact share,
+  // and each part's gross is rounded again in rowGross), so the
+  // bound scales with the price spread between parts and with the
+  // quantity — no single number characterises it, and the worst
+  // draw depends on the distribution. Measured on verbatim
+  // scaleParts, 20k seeded round-trips per family (FIX-9; Review-9's
+  // independent run found the same pattern): narrow prices
+  // (9-12 EGP, 0.2-5 units/part, mid 0.1x-2x): worst -3/+3 qirsh;
+  // realistic wide prices (1-100 EGP, same qtys): worst -61/+54;
+  // large qty (50-200 units/part, mid 0.01x-1x): -16/+16 narrow,
+  // -506/+504 wide; extreme collapse (mid qty 1-10 milli): thousands
+  // of qirsh in the worst draw (parts below 1 milli are destroyed
+  // and cannot come back). Inherent to any discrete pro-rata scheme;
+  // only keeping the pre-scale parts (the FIX-8 stash, used for the
+  // qty-0 round-trip and extended FIX-9 R9-L2 to intermediate
+  // retypes) preserves a round-trip exactly. A same-qty retype never
+  // rewrites (the q !== oldQty guard holds).
+  function scaleParts(parts, oldQty, newQty){
+    var floors = [], rems = [], i, sum = 0;
+    for (i=0;i<parts.length;i++){
+      var s = parts[i][1]*newQty/oldQty;
+      var fl = Math.floor(s);
+      floors.push(fl); rems.push(s-fl); sum += fl;
+    }
+    var order = [];
+    for (i=0;i<parts.length;i++) order.push(i);
+    order.sort(function(a,b){ return rems[b]-rems[a]; });
+    var left = newQty - sum;
+    for (i=0;i<left;i++) floors[order[i]] += 1;
+    var out = [];
+    for (i=0;i<parts.length;i++) out.push([parts[i][0], floors[i]]);
+    return out;
+  }
+  // FIX-8 R8-M1: the qty-0 stash. Typing qty 0 must not destroy the
+  // row price — rowAvg returns 0 at qty 0, so recomputing the price
+  // there zeroed it and the oldQty<=0 fallback then rebuilt the parts
+  // from that zeroed price (3->0->3 posted 3000 instead of 3002).
+  // Stashing the pre-zero parts (own prices, exact split) lets a
+  // retype restore the row exactly. validStash is defensive: the
+  // stash round-trips through sessionStorage, so a hand-edited store
+  // must never be trusted — a bad stash falls back to the plain
+  // single-part path.
+  function validStash(st){
+    if (!st || typeof st.qty !== 'number' || st.qty <= 0 || typeof st.price !== 'number' ||
+        !Array.isArray(st.parts) || !st.parts.length) return false;
+    var sum = 0, k, pt;
+    for (k=0;k<st.parts.length;k++){
+      pt = st.parts[k];
+      if (!Array.isArray(pt) || pt.length !== 2 || typeof pt[0] !== 'number' ||
+          typeof pt[1] !== 'number' || pt[0] < 0 || pt[1] < 0) return false;
+      sum += pt[1];
+    }
+    return sum === st.qty;
+  }
+  var tbody = document.querySelector('#cart tbody');
+  var linesDiv = document.getElementById('cart-lines');
+  var canEditPrice = {{index .Data "canEditPrice"}};
+  var canDiscount = {{index .Data "canDiscount"}};
+  // Parse exactly like the server's ParseMoney (money.go): optional
+  // "ج.م" suffix, plain decimal, at most 2 decimal places, no commas,
+  // no sign, no junk. Returns cents, or NaN when the server would
+  // refuse the value — the caller must then leave the input alone so
+  // the server's own error surfaces (FIX-5 R5-L4: bare parseFloat
+  // silently rewrote "1,000.00 ج.م" to "1.00 ج.م" and rounded
+  // "10.005 ج.م" up to "10.01 ج.م").
+  function parseMoneyField(s){
+    s = String(s == null ? '' : s).replace(/ج\.م/g, '').trim();
+    if (s === '') return NaN;
+    if (!/^\d+(\.\d{1,2})?$/.test(s)) return NaN;
+    return Math.round(parseFloat(s) * 100);
+  }
+  // Strict qty parser (FIX-6 R6-L3): plain decimal, at most 3 decimal
+  // places, no commas, no sign, no junk. Returns milli-units, or NaN
+  // when the value is not a valid quantity — the caller must then leave
+  // the input alone instead of rewriting it to 0.
+  function parseQtyField(s){
+    s = String(s == null ? '' : s).trim();
+    if (s === '') return NaN;
+    if (!/^\d+(\.\d{1,3})?$/.test(s)) return NaN;
+    return Math.round(parseFloat(s) * 1000);
+  }
+  function fmt(c){ return (c/100).toFixed(2) + ' ج.م'; }
+  function render(){
+    tbody.innerHTML = '';
+    linesDiv.innerHTML = '';
+    var gross = 0;
+    cart.forEach(function(ln, i){
+      // FIX-9 R9-L3: clamp the displayed row total at zero — a
+      // discounted row parked at qty 0 has rowGross 0 but still
+      // carries its item discount, so the unclamped total showed
+      // -5.00 ج.م and dragged the totals card negative.
+      var total = Math.max(rowGross(ln) - ln.disc, 0);
+      gross += total;
+      // The displayed price is the row's weighted average; mark it
+      // approximate exactly when it does not multiply back to the
+      // exact row gross (parity G-1; PyQt fix-4 rule). A terminating
+      // average, a single-price row and a price edit (parts collapse)
+      // all multiply back exactly and stay unmarked. The discount
+      // is not part of this check: the row total is gross minus
+      // discount, and the marker is about price times qty vs gross.
+      var avgApprox = ln.qty > 0 && Math.round(ln.price * ln.qty / 1000) !== rowGross(ln);
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>'+ln.name+'</td>'+
+        '<td><input type="number" step="0.001" min="0" value="'+(ln.qty/1000)+'" data-i="'+i+'" data-f="qty" class="cart-input"></td>'+
+        '<td><input type="number" step="0.01" min="0" value="'+(ln.price/100).toFixed(2)+'" data-i="'+i+'" data-f="price" class="cart-input"'+(canEditPrice?'':' disabled')+'>'+(avgApprox?'<span title="سعر متوسط تقريبي">≈</span>':'')+'</td>'+
+        '<td><input type="number" step="0.01" min="0" value="'+(ln.disc/100).toFixed(2)+'" data-i="'+i+'" data-f="disc" class="cart-input"'+(canDiscount?'':' disabled')+'></td>'+
+        '<td class="num">'+fmt(total)+'</td>'+
+        '<td><button type="button" class="btn-small" data-del="'+i+'">حذف</button></td>';
+      tbody.appendChild(tr);
+      // Hidden inputs are emitted per PART (not per row), so the server
+      // receives each addition at its own price and merges them into
+      // one invoice line with the exact total; the row discount rides
+      // on the first part only.
+      // FIX-9 R9-M1: skip zero-qty parts — a qty edit that floors a
+      // part to 0 milli (scaleParts) left a dead part in the form and
+      // the server refuses ANY zero-qty line, so one dead part aborted
+      // the whole invoice. Zero-qty parts contribute 0 to the gross,
+      // so skipping them keeps the submitted gross exactly rowGross;
+      // the discount rides on the first EMITTED part, not k===0.
+      var discPlaced = false;
+      ln.parts.forEach(function(pt, k){
+        if (pt[1] === 0) return;
+        [['id', ln.id], ['qty', pt[1]/1000], ['price', pt[0]/100], ['disc', !discPlaced ? ln.disc/100 : 0]].forEach(function(kv, j){
+          var h = document.createElement('input');
+          h.type = 'hidden';
+          h.name = ['line_product_id','line_qty','line_price','line_discount'][j];
+          h.value = kv[1];
+          linesDiv.appendChild(h);
+        });
+        discPlaced = true;
+      });
+    });
+    // Invalid money input contributes 0 to the displayed totals —
+    // it stays in the field untouched for the server to refuse.
+    var invDisc = parseMoneyField(document.getElementById('inv-disc').value);
+    if (isNaN(invDisc)) invDisc = 0;
+    var discEl = document.getElementById('disc-total');
+    if (discEl) discEl.textContent = fmt(invDisc);
+    var net = Math.max(gross - invDisc, 0);
+    document.getElementById('gross').textContent = fmt(gross);
+    document.getElementById('net').textContent = fmt(net);
+    var paid = parseMoneyField(document.getElementById('paid').value);
+    if (isNaN(paid)) paid = 0;
+    document.getElementById('remaining').textContent = fmt(Math.max(net - paid, 0));
+    // Promo preview (best offers for the current cart) — posted per
+    // part, like the form, so the preview merges exactly like creation.
+    if (cart.length) {
+      var previewLines = [];
+      cart.forEach(function(ln){ ln.parts.forEach(function(pt, k){ previewLines.push({product_id: ln.id, qty: String(pt[1]/1000), unit_price: pt[0], item_discount: k===0 ? ln.disc : 0}); }); });
+      fetch('/api/sales/preview', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({customer_id: 1, sale_type: document.getElementById('sale-type').value,
+          invoice_discount: invDisc, lines: previewLines})})
+      .then(function(r){return r.json();}).then(function(d){
+        var box = document.getElementById('promo-box');
+        if (d.ok) {
+          var txt = 'بعد العروض: الصافي ' + fmt(d.net);
+          if (d.applied_offers && d.applied_offers.length) {
+            txt += ' — عروض: ' + d.applied_offers.map(function(o){return o.name + ' (وفّر ' + fmt(o.saved) + ')';}).join('، ');
+          }
+          if (d.free_units) { var f = Object.keys(d.free_units); if (f.length) txt += ' — وحدات مجانية: ' + f.length + ' صنف'; }
+          box.textContent = txt;
+        }
+      }).catch(function(){});
+    } else { document.getElementById('promo-box').textContent = ''; }
+    saveCart();
+  }
+  function addLine(id, name, price, qtyMilli){
+    qtyMilli = qtyMilli || 1000;
+    for (var i=0;i<cart.length;i++) {
+      // FIX-3 duplicate rule: same product merges into the one row
+      // whatever its price — qty grows and the total grows by the
+      // exact amount of the addition.
+      if (cart[i].id === id) { cart[i].stashed = null; cart[i].parts.push([price, qtyMilli]); cart[i].qty += qtyMilli; cart[i].price = rowAvg(cart[i]); render(); return; }
+    }
+    cart.push({id:id, name:name, qty:qtyMilli, price:price, disc:0, parts:[[price, qtyMilli]]});
+    render();
+  }
+  document.getElementById('add-btn').addEventListener('click', function(){
+    var sel = document.getElementById('product-pick');
+    if (sel.value) { var opt = sel.options[sel.selectedIndex]; addLine(parseInt(sel.value,10), opt.getAttribute('data-name'), parseInt(opt.getAttribute('data-price'),10)); }
+  });
+  // "إلغاء" يمسح أصناف الفاتورة الحالية فقط — نفس ما يفعله F1، بلا حفظ.
+  document.getElementById('clear-btn').addEventListener('click', function(){ cart = []; render(); });
+  document.getElementById('barcode').addEventListener('keydown', function(e){
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    var code = e.target.value.trim();
+    if (!code) return;
+    fetch('/api/products/barcode/' + encodeURIComponent(code)).then(function(r){return r.json();}).then(function(d){
+      if (!d.ok) { alert(d.error || 'لم يتم العثور على المنتج'); return; }
+      var p = d.product;
+      if (d.scale) { addLine(p.id, p.name + ' (وزني)', p.price_per_kg, d.scale.weight); }
+      else { addLine(p.id, p.name, p.retail_price, 1000); }
+      e.target.value = '';
+    }).catch(function(){ alert('تعذّر البحث عن الباركود'); });
+  });
+  tbody.addEventListener('input', function(e){
+    var i = parseInt(e.target.getAttribute('data-i'),10);
+    var f = e.target.getAttribute('data-f');
+    if (isNaN(i) || !f) return;
+    // FIX-6 R6-L3: route line edits through the strict parsers instead
+    // of bare parseFloat, which turned "1,000" into 1, "" into 0 and
+    // rounded "10.005" up to 10.01. An unparseable edit is left exactly
+    // as typed (no render, so the field is not rebuilt) and the server
+    // refuses it with its own error — same rule as the blur path.
+    if (f==='qty') {
+      var q = parseQtyField(e.target.value);
+      if (isNaN(q)) return;
+      // FIX-7 R7-L2: a qty edit must not collapse the parts at the
+      // rounded weighted average — on a merged different-price row
+      // that rewrote the total by +-1 qirsh for retyping the same
+      // number. Scale the parts pro-rata instead, each keeping its
+      // own price; an unchanged qty leaves the parts untouched, so
+      // the gross is preserved exactly. (The price-edit collapse
+      // next to this is NOT a defect: the user explicitly typed the
+      // new price, so re-pricing the whole row is the intent.)
+      var oldQty = cart[i].qty;
+      if (q !== oldQty) {
+        // FIX-8 R8-M1 BEGIN (qty-0 round-trip must not destroy the row price)
+        if (oldQty > 0 && q === 0) {
+          // Typing 0: stash the pre-zero parts (own prices, exact
+          // split) and scale the live parts to zero qty, but do NOT
+          // recompute the price — rowAvg returns 0 at qty 0, and
+          // that zeroed price is what the old fallback then rebuilt
+          // from. The zero-qty parts make the preview 0.00, and
+          // render() skips zero-qty parts when emitting hidden
+          // inputs (FIX-9 R9-M1), so a row parked at qty 0 posts
+          // no lines and the server refuses it — nothing wrong can
+          // be submitted from this state.
+          cart[i].stashed = {parts: cart[i].parts, qty: oldQty, price: cart[i].price};
+          cart[i].parts = scaleParts(cart[i].parts, oldQty, 0);
+          cart[i].qty = 0;
+        } else if (validStash(cart[i].stashed)) {
+          // FIX-9 R9-L2: the stash survives intermediate retypes.
+          // FIX-8 consumed it on the first non-zero retype, so
+          // 3->0->0.001->3 scaled the second step from the
+          // already-floored live parts and drifted to 3003 — the
+          // fix-8 report's "price and gross survive" claim for that
+          // path was false (CORRECTED in the FIX-9 report). Every
+          // retype now scales from the stashed true split, which is
+          // always at least as accurate as the live parts; the stash
+          // is consumed only on the exact restore (q === st.qty),
+          // which returns the parts byte-identically (exact gross).
+          // Price edits and addLine merges still clear the stash,
+          // so an explicit edit can never be overridden by it.
+          var st = cart[i].stashed;
+          if (q === st.qty) {
+            cart[i].stashed = null;
+            cart[i].parts = st.parts;
+          } else {
+            cart[i].parts = scaleParts(st.parts, st.qty, q);
+          }
+          cart[i].qty = q;
+          cart[i].price = rowAvg(cart[i]);
+        } else if (oldQty > 0) {
+          cart[i].stashed = null;
+          cart[i].parts = scaleParts(cart[i].parts, oldQty, q);
+          cart[i].qty = q;
+          cart[i].price = rowAvg(cart[i]);
+        } else {
+          // No stash and no live qty (e.g. a price edit at qty 0
+          // cleared the stash): rebuild a single part at the row
+          // price — the explicit edit wins.
+          cart[i].parts = [[cart[i].price, q]];
+          cart[i].qty = q;
+          cart[i].price = rowAvg(cart[i]);
+        }
+        // FIX-8 R8-M1 END
+      }
+    } else {
+      var c = parseMoneyField(e.target.value);
+      if (isNaN(c)) return;
+      // Editing a merged row's qty or price collapses its parts into a
+      // single part at the edited value (manual edit re-prices the whole
+      // quantity); the discount stays per row.
+      if (f==='price') { cart[i].stashed = null; cart[i].price = c; cart[i].parts = [[cart[i].price, cart[i].qty]]; }
+      if (f==='disc') cart[i].disc = c;
+    }
+    render();
+  });
+  tbody.addEventListener('click', function(e){
+    var d = e.target.getAttribute('data-del');
+    if (d !== null) { cart.splice(parseInt(d,10),1); render(); }
+  });
+  document.getElementById('inv-disc').addEventListener('input', render);
+  document.getElementById('paid').addEventListener('input', render);
+  // One money format on the sales screen: these inputs show the totals
+  // format ("12.50 ج.م"). The server's ParseMoney strips the suffix.
+  // Normalise on blur only when the value parses cleanly exactly like
+  // the server would accept it; an invalid value is left exactly as
+  // typed so the server refuses it with its own error instead of this
+  // script silently rewriting it (FIX-5 R5-L4). Never normalise while
+  // typing, so editing never fights the user.
+  ['inv-disc','paid'].forEach(function(id){
+    document.getElementById(id).addEventListener('blur', function(){
+      var c = parseMoneyField(this.value);
+      if (!isNaN(c)) this.value = (c/100).toFixed(2) + ' ج.م';
+    });
+  });
+  // Fields render() does not otherwise observe still persist the cart.
+  ['customer','sale-type','pay-method'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', saveCart);
+  });
+  var notesInput = namedInput('notes');
+  if (notesInput) notesInput.addEventListener('input', saveCart);
+  var overInput = namedInput('allow_over_limit');
+  if (overInput) overInput.addEventListener('change', saveCart);
+  var belowInput = namedInput('allow_below_cost');
+  if (belowInput) belowInput.addEventListener('change', saveCart);
+  // Successful save redirects away; a failed save re-renders this page
+  // with an error — mark the submit so the next load can tell them apart.
+  document.getElementById('pos-form').addEventListener('submit', markCartSubmitted);
+  document.getElementById('customer').addEventListener('change', function(){
+    if (this.value === '1') {
+      var net = document.getElementById('net').textContent;
+      document.getElementById('paid').value = net;
+      render();
+    }
+  });
+  document.addEventListener('keydown', function(e){
+    // form.submit() skips the submit event, so mark the submit here too.
+    if (e.key === 'F3') { e.preventDefault(); markCartSubmitted(); document.getElementById('pos-form').submit(); }
+    if (e.key === 'F1') { e.preventDefault(); cart = []; render(); }
+  });
+  render();
+})();
+</script>
+{{template "chrome-bottom" .}}

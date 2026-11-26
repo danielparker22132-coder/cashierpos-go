@@ -1,0 +1,20 @@
+{{template "chrome-top" .}}
+{{if .Data.IsNew}}<h1>عميل جديد</h1>{{else}}<h1>تعديل العميل</h1>{{end}}
+<form method="post"{{if .Data.IsNew}} action="/customers/new"{{else}} action="/customers/{{.Data.Customer.ID}}/edit"{{end}} class="form">
+  <label>اسم العميل * <input name="name" required{{if .Data.Customer}} value="{{.Data.Customer.Name}}"{{end}}></label>
+  <label>الهاتف <input name="phone"{{if .Data.Customer}} value="{{.Data.Customer.Phone}}"{{end}}></label>
+  <label>العنوان <input name="address"{{if .Data.Customer}} value="{{.Data.Customer.Address}}"{{end}}></label>
+  <label>حد الائتمان (ج.م — 0 يعني بلا حد) <input name="credit_limit" inputmode="decimal" value="{{.Data.CreditLimitEGP}}"></label>
+  {{if not .Data.IsNew}}
+  <label>الحالة
+    <select name="is_active">
+      <option value="1"{{if .Data.Customer.IsActive}} selected{{end}}>نشط</option>
+      <option value="0"{{if not .Data.Customer.IsActive}} selected{{end}}>موقوف</option>
+    </select>
+  </label>
+  {{end}}
+  <button type="submit" class="btn-primary">حفظ</button>
+  <a href="/customers">إلغاء</a>
+</form>
+<p class="hint">حد ائتمان سالب مرفوض — السالب ممنوع في كل مكان</p>
+{{template "chrome-bottom" .}}

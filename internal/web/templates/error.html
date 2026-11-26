@@ -1,0 +1,10 @@
+{{template "chrome-top" .}}
+<div class="error-card">
+<h1>{{.Title}}</h1>
+{{if .Error}}<p class="error-text">{{.Error}}</p>{{else}}<p class="error-text">حدث خطأ غير متوقع</p>{{end}}
+<p class="error-actions">
+  <a class="btn btn-primary" href="/">العودة للرئيسية</a>
+  <button type="button" class="btn btn-secondary" onclick="history.back()">رجوع</button>
+</p>
+</div>
+{{template "chrome-bottom" .}}

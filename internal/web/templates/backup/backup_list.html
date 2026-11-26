@@ -1,0 +1,18 @@
+{{template "chrome-top" .}}
+
+<h1>النسخ الاحتياطي</h1>
+<p>النسخة المحلية في مجلد backups بجانب قاعدة البيانات. النسخة السحابية مجلد متزامن يختاره المدير (بلا OAuth وبلا شبكة) — تُتحقَّق على القرص قبل اعتبارها ناجحة</p>
+<p>السحابة: {{if .Data.Cloud.Enabled}}مفعّلة — {{.Data.Cloud.Dir}}{{else}}معطلة{{end}} | آخر حالة: {{.Data.Cloud.LastStatus}} | آخر نسخة ناجحة: {{.Data.Cloud.Last}}</p>
+<form method="post" action="/backup/now"><button type="submit" class="btn-primary">إنشاء نسخة الآن</button></form>
+{{if .Data.Backups}}
+<table><tr><th>الملف</th><th>الموقع</th><th>الحجم (بايت)</th><th>التاريخ</th><th>استعادة</th></tr>
+{{range .Data.Backups}}<tr>
+<td>{{.Name}}</td><td>{{if eq .Location "cloud"}}سحابية{{else}}محلية{{end}}</td><td>{{.Size}}</td><td>{{.ModTime}}</td>
+<td><form method="post" action="/backup/restore" onsubmit="return confirm('استعادة {{.Name}}؟ سيتم استبدال قاعدة البيانات الحالية')">
+<input type="hidden" name="location" value="{{.Location}}"><input type="hidden" name="name" value="{{.Name}}">
+<button type="submit">استعادة</button></form></td>
+</tr>{{end}}</table>
+{{else}}<p>لا توجد نسخ بعد</p>{{end}}
+<p><a href="/settings">إعدادات النسخ السحابي</a></p>
+
+{{template "chrome-bottom" .}}

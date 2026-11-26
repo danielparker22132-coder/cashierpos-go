@@ -1,0 +1,301 @@
+{{template "chrome-top" .}}
+<style>
+.hub-search{position:relative;max-width:560px;margin:12px 0}
+.hub-search input{width:100%;min-height:44px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:16px;box-sizing:border-box}
+.hub-search-results{position:absolute;inset-inline:0;top:48px;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;list-style:none;margin:0;padding:4px;max-height:220px;overflow:auto;z-index:20}
+.hub-search-results li a{display:block;padding:8px 12px;border-radius:4px;color:var(--text);text-decoration:none}
+.hub-search-results li a:hover{background:var(--surface-muted)}
+.hub-search-empty{padding:8px 12px;color:var(--muted)}
+.hub-sell{display:flex;align-items:center;justify-content:center;min-height:56px;width:100%;font-size:18px;font-weight:700;margin:12px 0;text-decoration:none;box-sizing:border-box}
+.hub-chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.hub-chip{min-height:44px;padding:8px 16px;background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-bottom-width:1px;border-radius:8px;cursor:pointer;font-size:15px;font-weight:600}
+.hub-chip[aria-expanded="true"]{background:var(--surface-muted)}
+.hub-panel{margin:4px 0 12px}
+.hub-panel .hub{margin-top:0}
+.hub-latest{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.hub-latest h2{margin:0 0 8px;font-size:16px}
+.hub-latest-row{text-align:center;color:var(--muted);padding:4px 0}
+.hub-alerts-strip{display:flex;gap:16px;flex-wrap:wrap}
+.hub-dismiss{margin-inline-start:12px}
+</style>
+<div class="hub-head">
+  <div>
+    <h1>الرئيسية</h1>
+    <p class="hint">اختر شاشة من البطاقات أدناه</p>
+  </div>
+  <div class="clock" id="clock" title="الساعة الحية">--:--:-- | --/--/----</div>
+</div>
+
+{{/* حالة الشيفت (L-11 / L-12) — تحذير فقط، لا فتح تلقائي أبداً (G1).
+   H-7: one-time hub-load prompt when the user has no open shift: warn +
+   offer "فتح شاشة الشيفت"; never auto-opens. Warehouse has no shift
+   concept, and roles that cannot open a shift get no prompt (PyQt guard). */}}
+{{if .Data}}
+{{if eq .Data.ShiftState "open"}}
+<div class="alert ok">{{template "icon-check"}} شيفت مفتوح <strong>#{{.Data.ShiftID}}</strong> — <a href="/shifts">فتح شاشة الشيفت</a></div>
+{{else if can .User "open_shift"}}
+<div class="alert warn" role="alert" id="hub-shift-prompt">{{template "icon-alert"}} {{if eq .Data.ShiftState "closed_today"}}يوجد يوم عمل محفوظ لهذا اليوم. يمكنك استكماله من شاشة الشيفت.{{else}}لا يوجد شيفت مفتوح — افتح شيفت قبل البيع أو التحصيل.{{end}} <a class="btn btn-small" href="/shifts">فتح شاشة الشيفت</a><button type="button" class="btn btn-small hub-dismiss" data-dismiss="hub-shift-prompt">إغلاق</button></div>
+{{end}}
+{{/* H-6: dismissible hub-load low-stock alert (hub load only — this
+   file renders on the hub alone, never on other navigations).
+   PR-L1: the "وصل للحد الأدنى" sentence lives ONLY in the alerts
+   strip below (the persistent surface); this alert keeps a shorter
+   wording so the sentence is not shown twice. */}}
+{{if gt .Data.LowStockCount 0}}
+<div class="alert warn" role="alert" id="hub-lowstock-alert">{{template "icon-alert"}} تنبيه: يوجد {{.Data.LowStockCount}} صنف منخفض المخزون {{if can .User "view_products"}}<a href="/products">عرض المنتجات</a>{{end}}<button type="button" class="btn btn-small hub-dismiss" data-dismiss="hub-lowstock-alert">إغلاق</button></div>
+{{end}}
+{{/* H-6 startup inventory popup (Admin/Manager only; counts are filled
+   only for them in hubData): expired / near-expiry 7d / vendor-due. */}}
+{{if or (gt .Data.ExpiredCount 0) (gt .Data.NearExpiryCount 0) (gt .Data.VendorDueCount 0)}}
+<div class="alert warn" role="alert" id="hub-inventory-alert">{{template "icon-alert"}} تنبيه المخزون عند بدء التشغيل:
+{{if gt .Data.ExpiredCount 0}}<div>يوجد {{.Data.ExpiredCount}} صنف منتهي الصلاحية.</div>{{end}}{{if gt .Data.NearExpiryCount 0}}<div>يوجد {{.Data.NearExpiryCount}} صنف ينتهي خلال 7 أيام.</div>{{end}}{{if gt .Data.VendorDueCount 0}}<div>يوجد {{.Data.VendorDueCount}} مورد له مستحقات قريبة.</div>{{end}}<button type="button" class="btn btn-small hub-dismiss" data-dismiss="hub-inventory-alert">إغلاق</button></div>
+{{end}}
+{{end}}
+
+{{/* H-8: bells hidden at 0 — each bell renders only with a nonzero
+   count. Audit bell Admin/Manager-only (view_audit); the web orders
+   bell keeps its global 5 s poll in layout.html, untouched here. */}}
+<div class="bells">
+  {{if can .User "view_audit"}}{{if gt .UnreadAudit 0}}
+    <a class="bell-link" href="/audit">{{template "icon-bell"}} تنبيهات التدقيق <span class="count num">{{.UnreadAudit}}</span></a>
+  {{end}}{{end}}
+  {{if gt .UnreadNotif 0}}
+  <a class="bell-link" href="/notifications">{{template "icon-bell"}} التنبيهات <span class="count num">{{.UnreadNotif}}</span></a>
+  {{end}}
+</div>
+
+{{/* H-1: hub search — live permission-filtered dropdown of the hub
+   destinations the current user may open (same `can` gates as the
+   cards below). Enter opens the first match; empty query opens nothing. */}}
+<div class="hub-search">
+  <input type="search" id="hub-search" placeholder="ابحث عن شاشة... مثال: المخزون" aria-label="ابحث عن شاشة" autocomplete="off">
+  <ul class="hub-search-results" id="hub-search-results" hidden></ul>
+</div>
+<div id="hub-search-data" hidden>
+  {{if can .User "create_invoice"}}<a href="/sales" data-label="المبيعات">المبيعات</a>{{end}}
+  {{if can .User "open_shift"}}<a href="/shifts" data-label="الشيفت">الشيفت</a>{{end}}
+  {{if can .User "open_shift"}}<a href="/shifts" data-label="حالة الشيفت">حالة الشيفت</a>{{end}}
+  {{if or (can .User "move_cashbox") (can .User "view_all_cashbox")}}<a href="/shifts" data-label="النقدية والدرج">النقدية والدرج</a>{{end}}
+  {{if can .User "view_products"}}<a href="/products" data-label="المنتجات">المنتجات</a>{{end}}
+  {{if can .User "view_stock"}}<a href="/products" data-label="المخزون">المخزون</a>{{end}}
+  {{if can .User "stocktake_count"}}<a href="/stocktake" data-label="الجرد بالباركود">الجرد بالباركود</a>{{end}}
+  {{if or (can .User "manage_vendors") (can .User "create_vendor")}}<a href="/vendors" data-label="الموردون">الموردون</a>{{end}}
+  <a href="/payables" data-label="المستحقات">المستحقات</a>
+  {{if can .User "view_zones"}}<a href="/zones" data-label="مناطق التوصيل">مناطق التوصيل</a>{{end}}
+  {{if can .User "manage_customers"}}<a href="/customers" data-label="العملاء">العملاء</a>{{end}}
+  {{if can .User "view_reports"}}<a href="/reports/sales" data-label="الفواتير">الفواتير</a>{{end}}
+  {{if can .User "view_customer_report"}}<a href="/reports/customer" data-label="تقرير العملاء">تقرير العملاء</a>{{end}}
+  {{if can .User "manage_promotions"}}<a href="/promotions" data-label="العروض والترويج">العروض والترويج</a>{{end}}
+  {{if can .User "do_return"}}<a href="/returns" data-label="المرتجعات">المرتجعات</a>{{end}}
+  {{if can .User "view_reports"}}<a href="/reports" data-label="التقارير">التقارير</a>{{end}}
+  {{if can .User "view_profit_analysis"}}<a href="/reports/profit-analysis" data-label="تحليل الربح">تحليل الربح</a>{{end}}
+  {{if can .User "view_return_analysis"}}<a href="/reports/returns" data-label="تحليل المرتجعات">تحليل المرتجعات</a>{{end}}
+  {{if can .User "view_payment_report"}}<a href="/reports/payments" data-label="تقرير طرق الدفع">تقرير طرق الدفع</a>{{end}}
+  {{if can .User "shift_monitor"}}<a href="/shifts/monitor" data-label="مراقبة الشيفتات">مراقبة الشيفتات</a>{{end}}
+  {{if can .User "access_dashboard"}}<a href="/dashboard" data-label="لوحة تحكم المدير">لوحة تحكم المدير</a>{{end}}
+  {{if can .User "manage_users"}}<a href="/users" data-label="المستخدمون">المستخدمون</a>{{end}}
+  {{if can .User "register_expense"}}<a href="/expenses" data-label="المصروفات">المصروفات</a>{{end}}
+  {{if can .User "view_attendance"}}<a href="/attendance" data-label="الحضور">الحضور</a>{{end}}
+  {{if can .User "access_daily_close"}}<a href="/dailyclose" data-label="الإغلاق اليومي">الإغلاق اليومي</a>{{end}}
+  {{if can .User "view_audit"}}<a href="/audit" data-label="التدقيق">التدقيق</a>{{end}}
+  {{if can .User "access_settings"}}<a href="/settings" data-label="الإعدادات">الإعدادات</a>{{end}}
+  <a href="/notifications" data-label="التنبيهات">التنبيهات</a>
+</div>
+
+{{/* H-4: the single primary sell button — the existing /sales
+   destination restyled (full row, min-height 56px, .btn-primary white
+   face + 2px accent outline, bold). No second sales link anywhere. */}}
+{{if can .User "create_invoice"}}<a class="btn btn-primary hub-sell" href="/sales">المبيعات — ابدأ البيع</a>{{end}}
+
+{{/* H-3: four stat cards, always rendered (PR-M1, like PyQt design
+   D hub.py:589-597). Drawer = open shift expected balance ("—" with
+   no open shift); pending orders = live feed count ("غير متصل" when
+   the feed cannot be read). Day scope for view_reports holders,
+   shift scope otherwise (§15 M4) — a shift-less cashier without
+   view_reports shows the shift-scope cards at 0.00 / 0. */}}
+{{if .Data}}
+<div class="summary">
+  {{if eq .Data.SummaryScope "day"}}
+  <div class="summary-box"><span class="summary-label">مبيعات اليوم</span><span class="summary-value num">{{egp .Data.TodaySales}}</span></div>
+  <div class="summary-box"><span class="summary-label">عدد فواتير اليوم</span><span class="summary-value num">{{.Data.TodayInvoices}}</span></div>
+  {{else}}
+  <div class="summary-box"><span class="summary-label">مبيعات شيفتي</span><span class="summary-value num">{{egp .Data.ShiftSales}}</span></div>
+  <div class="summary-box"><span class="summary-label">فواتير شيفتي</span><span class="summary-value num">{{.Data.ShiftInvoices}}</span></div>
+  {{end}}
+  <div class="summary-box"><span class="summary-label">رصيد الدرج</span><span class="summary-value num">{{if .Data.HasDrawer}}{{egp .Data.DrawerBalance}}{{else}}—{{end}}</span></div>
+  <div class="summary-box"><span class="summary-label">طلبات متجر معلقة</span><span class="summary-value num">{{if .Data.PendingOrdersKnown}}{{.Data.PendingOrders}}{{else}}غير متصل{{end}}</span></div>
+</div>
+
+{{/* H-6: alerts strip combining low-stock + pending-evidence counts,
+   hidden entirely when both are 0 (never a stale count). */}}
+{{if or (gt .Data.LowStockCount 0) (gt .PendingEvidence 0)}}
+<div class="alert warn hub-alerts-strip" id="hub-alerts-strip" role="status">
+  {{if gt .Data.LowStockCount 0}}<span>{{.Data.LowStockCount}} صنف وصل للحد الأدنى في المخزون — <a href="/products">عرض المنتجات</a></span>{{end}}
+  {{if gt .PendingEvidence 0}}<span>{{.PendingEvidence}} بانتظار مراجعة دليل الدفع — <a href="/orders">عرض الطلبات</a></span>{{end}}
+</div>
+{{end}}
+{{end}}
+
+{{/* H-2: five sections, same titles / membership / accents as PyQt
+   _HUB_SECTIONS (hub.py:223-238; accents hub.py:244-251). Chips open
+   one panel at a time; re-tap collapses. Sales stays out of the
+   البيع اليومي panel — it is the primary button above. Route notes:
+   حالة الشيفت + النقدية والدرج share the /shifts screen (no dedicated
+   Go page); المخزون shares /products; الفواتير is the /reports/sales
+   invoice list. Cards are permission-gated per card; a section with
+   nothing openable shows the empty-section line (filled by JS). */}}
+<h2>كل الشاشات</h2>
+<div class="hub-chips">
+  <button type="button" class="hub-chip" data-section="s1" style="border-top:3px solid #2563eb" aria-expanded="true">البيع اليومي</button>
+  <button type="button" class="hub-chip" data-section="s2" style="border-top:3px solid #059669" aria-expanded="false">المخزون والمنتجات</button>
+  <button type="button" class="hub-chip" data-section="s3" style="border-top:3px solid #d97706" aria-expanded="false">العملاء والفواتير</button>
+  <button type="button" class="hub-chip" data-section="s4" style="border-top:3px solid #7c3aed" aria-expanded="false">التقارير والتحليل</button>
+  <button type="button" class="hub-chip" data-section="s5" style="border-top:3px solid #475569" aria-expanded="false">الإدارة</button>
+</div>
+
+<div class="hub-panel" id="hub-panel-s1"><div class="hub">
+  {{if can .User "open_shift"}}<a class="card" href="/shifts"><span class="card-icon">{{template "icon-clock"}}</span><span class="card-title">الشيفت</span><span class="card-desc">فتح وإغلاق وحركات الدرج</span></a>{{end}}
+  {{if can .User "open_shift"}}<a class="card" href="/shifts"><span class="card-icon">{{template "icon-clock"}}</span><span class="card-title">حالة الشيفت</span><span class="card-desc">حالة شيفت اليوم</span></a>{{end}}
+  {{if or (can .User "move_cashbox") (can .User "view_all_cashbox")}}<a class="card" href="/shifts"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">النقدية والدرج</span><span class="card-desc">نقدية ودرج الشيفت</span></a>{{end}}
+</div></div>
+
+<div class="hub-panel" id="hub-panel-s2" hidden><div class="hub">
+  {{if can .User "view_products"}}<a class="card" href="/products"><span class="card-icon">{{template "icon-box"}}</span><span class="card-title">المنتجات</span><span class="card-desc">أصناف وأسعار ومخزون</span></a>{{end}}
+  {{if can .User "view_stock"}}<a class="card" href="/products"><span class="card-icon">{{template "icon-box"}}</span><span class="card-title">المخزون</span><span class="card-desc">كميات المخزون المتاحة</span></a>{{end}}
+  {{if can .User "stocktake_count"}}<a class="card" href="/stocktake"><span class="card-icon">{{template "icon-clipboard"}}</span><span class="card-title">الجرد بالباركود</span><span class="card-desc">جلسات جرد المخزون</span></a>{{end}}
+  {{if or (can .User "manage_vendors") (can .User "create_vendor")}}<a class="card" href="/vendors"><span class="card-icon">{{template "icon-factory"}}</span><span class="card-title">الموردون</span><span class="card-desc">موردون وفواتير شراء</span></a>{{end}}
+  <a class="card" href="/payables"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">المستحقات</span><span class="card-desc">مستحقات الموردين والسداد</span></a>
+  {{if can .User "view_zones"}}<a class="card" href="/zones"><span class="card-icon">{{template "icon-gear"}}</span><span class="card-title">مناطق التوصيل</span><span class="card-desc">مناطق ورسوم التوصيل</span></a>{{end}}
+</div></div>
+
+<div class="hub-panel" id="hub-panel-s3" hidden><div class="hub">
+  {{if can .User "manage_customers"}}<a class="card" href="/customers"><span class="card-icon">{{template "icon-users"}}</span><span class="card-title">العملاء</span><span class="card-desc">عملاء وتحصيل وديون</span></a>{{end}}
+  {{if can .User "view_reports"}}<a class="card" href="/reports/sales"><span class="card-icon">{{template "icon-receipt"}}</span><span class="card-title">الفواتير</span><span class="card-desc">قائمة فواتير المبيعات</span></a>{{end}}
+  {{if can .User "view_customer_report"}}<a class="card" href="/reports/customer"><span class="card-icon">{{template "icon-users"}}</span><span class="card-title">تقرير العملاء</span><span class="card-desc">مبيعات وديون العملاء</span></a>{{end}}
+  {{if can .User "manage_promotions"}}<a class="card" href="/promotions"><span class="card-icon">{{template "icon-gift"}}</span><span class="card-title">العروض والترويج</span><span class="card-desc">عروض وخصومات</span></a>{{end}}
+  {{if can .User "do_return"}}<a class="card" href="/returns"><span class="card-icon">{{template "icon-undo"}}</span><span class="card-title">المرتجعات</span><span class="card-desc">إرجاع أصناف من فاتورة</span></a>{{end}}
+</div></div>
+
+<div class="hub-panel" id="hub-panel-s4" hidden><div class="hub">
+  {{if can .User "view_reports"}}<a class="card" href="/reports"><span class="card-icon">{{template "icon-chart"}}</span><span class="card-title">التقارير</span><span class="card-desc">مبيعات وأرباح وديون</span></a>{{end}}
+  {{if can .User "view_profit_analysis"}}<a class="card" href="/reports/profit-analysis"><span class="card-icon">{{template "icon-chart"}}</span><span class="card-title">تحليل الربح</span><span class="card-desc">أرباح المنتجات والفترات</span></a>{{end}}
+  {{if can .User "view_return_analysis"}}<a class="card" href="/reports/returns"><span class="card-icon">{{template "icon-undo"}}</span><span class="card-title">تحليل المرتجعات</span><span class="card-desc">مرتجعات وأسبابها</span></a>{{end}}
+  {{if can .User "view_payment_report"}}<a class="card" href="/reports/payments"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">تقرير طرق الدفع</span><span class="card-desc">نقدي وفيزا ومحافظ</span></a>{{end}}
+  {{if can .User "shift_monitor"}}<a class="card" href="/shifts/monitor"><span class="card-icon">{{template "icon-search"}}</span><span class="card-title">مراقبة الشيفتات</span><span class="card-desc">متابعة شيفتات الموظفين</span></a>{{end}}
+  {{if can .User "access_dashboard"}}<a class="card" href="/dashboard"><span class="card-icon">{{template "icon-chart"}}</span><span class="card-title">لوحة تحكم المدير</span><span class="card-desc">مؤشرات وإدارة المتجر</span></a>{{end}}
+</div></div>
+
+<div class="hub-panel" id="hub-panel-s5" hidden><div class="hub">
+  {{if can .User "manage_users"}}<a class="card" href="/users"><span class="card-icon">{{template "icon-user"}}</span><span class="card-title">المستخدمون</span><span class="card-desc">حسابات وأدوار</span></a>{{end}}
+  {{if can .User "register_expense"}}<a class="card" href="/expenses"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">المصروفات</span><span class="card-desc">تسجيل مصروف جديد</span></a>{{end}}
+  {{if can .User "view_attendance"}}<a class="card" href="/attendance"><span class="card-icon">{{template "icon-calendar"}}</span><span class="card-title">الحضور</span><span class="card-desc">حضور وانصراف الموظفين</span></a>{{end}}
+  {{if can .User "access_daily_close"}}<a class="card" href="/dailyclose"><span class="card-icon">{{template "icon-lock"}}</span><span class="card-title">الإغلاق اليومي</span><span class="card-desc">إغلاق يوم العمل</span></a>{{end}}
+  {{if can .User "view_audit"}}<a class="card" href="/audit"><span class="card-icon">{{template "icon-search"}}</span><span class="card-title">التدقيق</span><span class="card-desc">إجراءات وتنبيهات التدقيق</span></a>{{end}}
+  {{if can .User "access_settings"}}<a class="card" href="/settings"><span class="card-icon">{{template "icon-gear"}}</span><span class="card-title">الإعدادات</span><span class="card-desc">المحل والنسخ الاحتياطي</span></a>{{end}}
+  <a class="card" href="/notifications"><span class="card-icon">{{template "icon-bell"}}</span><span class="card-title">التنبيهات</span><span class="card-desc">تنبيهاتك غير المقروءة {{if gt .UnreadNotif 0}}<span class="count num">{{.UnreadNotif}}</span>{{end}}</span></a>
+</div></div>
+
+{{/* H-5: latest-3 invoices, display-only (no invoice-open path). */}}
+<div class="hub-latest">
+  <h2>آخر الفواتير</h2>
+  {{if .Data}}
+  {{if .Data.LatestInvoices}}
+  {{range .Data.LatestInvoices}}<div class="hub-latest-row">فاتورة {{.Number}} — {{egp .Total}} — {{.Method}}</div>{{end}}
+  {{else}}
+  <div class="hub-latest-row">لا توجد فواتير اليوم</div>
+  {{end}}
+  {{else}}
+  <div class="hub-latest-row">لا توجد فواتير اليوم</div>
+  {{end}}
+</div>
+
+<script>
+(function () {
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function tick() {
+    var el = document.getElementById("clock");
+    if (!el) return;
+    var d = new Date();
+    el.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) +
+      " | " + pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + "/" + d.getFullYear();
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  var dismissBtns = document.querySelectorAll("[data-dismiss]");
+  dismissBtns.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var t = document.getElementById(btn.getAttribute("data-dismiss"));
+      if (t) { t.hidden = true; }
+    });
+  });
+
+  var chips = document.querySelectorAll(".hub-chip");
+  chips.forEach(function (chip) {
+    chip.addEventListener("click", function () {
+      var panel = document.getElementById("hub-panel-" + chip.getAttribute("data-section"));
+      var wasHidden = panel.hidden;
+      document.querySelectorAll(".hub-panel").forEach(function (p) { p.hidden = true; });
+      chips.forEach(function (c) { c.setAttribute("aria-expanded", "false"); });
+      if (wasHidden) {
+        panel.hidden = false;
+        chip.setAttribute("aria-expanded", "true");
+      }
+    });
+  });
+
+  var panels = document.querySelectorAll(".hub-panel");
+  panels.forEach(function (panel) {
+    if (panel.querySelectorAll(".card").length === 0) {
+      var p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = "لا توجد شاشات متاحة لك في هذا القسم";
+      panel.appendChild(p);
+    }
+  });
+
+  var box = document.getElementById("hub-search");
+  var list = document.getElementById("hub-search-results");
+  var dests = [];
+  document.querySelectorAll("#hub-search-data a").forEach(function (a) {
+    dests.push({ label: a.getAttribute("data-label"), href: a.getAttribute("href") });
+  });
+  function renderMatches(q) {
+    list.innerHTML = "";
+    if (!q) { list.hidden = true; return; }
+    var matches = dests.filter(function (d) { return d.label.indexOf(q) !== -1; });
+    if (matches.length === 0) {
+      var empty = document.createElement("li");
+      empty.className = "hub-search-empty";
+      empty.textContent = "لا توجد شاشة مطابقة";
+      list.appendChild(empty);
+    } else {
+      matches.forEach(function (m) {
+        var li = document.createElement("li");
+        var a = document.createElement("a");
+        a.href = m.href;
+        a.textContent = m.label;
+        li.appendChild(a);
+        list.appendChild(li);
+      });
+    }
+    list.hidden = false;
+  }
+  if (box) {
+    box.addEventListener("input", function () { renderMatches(box.value.trim()); });
+    box.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        var q = box.value.trim();
+        if (!q) { return; }
+        var first = list.querySelector("a");
+        if (first) { window.location.href = first.getAttribute("href"); }
+      }
+    });
+    document.addEventListener("click", function (ev) {
+      if (!ev.target.closest(".hub-search")) { list.hidden = true; }
+    });
+  }
+})();
+</script>
+{{template "chrome-bottom" .}}

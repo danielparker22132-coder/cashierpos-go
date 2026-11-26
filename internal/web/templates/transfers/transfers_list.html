@@ -1,0 +1,38 @@
+{{template "chrome-top" .}}
+<h1>التحويلات الإلكترونية</h1>
+<p><a class="btn btn-primary" href="/transfers/new">{{template "icon-plus"}} تسجيل تحويل إلكتروني</a></p>
+<p class="hint">الكل يرى التحويلات. الكاشير يستطيع الاعتماد أيضاً؛ الرفض للمدير/المشرف فقط</p>
+<table>
+  <thead><tr><th>المرسل</th><th>المبلغ</th><th>الطريقة</th><th>المرجع</th><th>الحالة</th><th>التاريخ</th><th>راجعها</th><th>ملاحظة المراجعة</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Transfers}}
+    <tr>
+      <td>{{.SenderName}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td>{{.Method}}</td>
+      <td class="num">{{.Reference}}</td>
+      <td>{{if eq .Status "pending"}}قيد المراجعة{{else if eq .Status "approved"}}معتمد{{else}}مرفوض{{end}}</td>
+      <td class="num">{{.CreatedAt}}</td>
+      <td>{{.ReviewedBy}} {{.ReviewedAt}}</td>
+      <td>{{.ReviewNote}}</td>
+      <td>
+        {{if eq .Status "pending"}}
+        <form method="post" action="/transfers/{{.ID}}/approve" style="display:inline">
+          <input type="hidden" name="note" value="">
+          <button type="submit">اعتماد</button>
+        </form>
+        {{if can $.User "reject_transfer"}}
+        <form method="post" action="/transfers/{{.ID}}/reject" style="display:inline" onsubmit="return confirm('هل تريد رفض هذا التحويل؟')">
+          <input type="hidden" name="note" value="">
+          <button type="submit">رفض</button>
+        </form>
+        {{end}}
+        {{end}}
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="9">لا توجد تحويلات</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

@@ -1,0 +1,37 @@
+{{template "chrome-top" .}}
+<h1>العروض والترويج</h1>
+<p class="hint">تُطبق العروض تلقائيًا عند البيع: أفضل عرض واحد لكل سطر بلا تكديس. إدارة العروض للمدير فقط</p>
+<p>
+  تصفية:
+  <a href="/promotions">الكل</a> |
+  <a href="/promotions?status=active">نشطة</a> |
+  <a href="/promotions?status=upcoming">قادمة</a> |
+  <a href="/promotions?status=expired">منتهية</a> |
+  <a href="/promotions?status=inactive">معطّلة</a>
+  {{if index .Data "canManage"}} | <a class="btn btn-primary" href="/promotions/new">+ عرض جديد</a>{{end}}
+</p>
+<table>
+  <thead><tr><th>الاسم</th><th>النوع</th><th>القيمة</th><th>الصلاحية</th><th>الحالة</th><th></th></tr></thead>
+  <tbody>
+  {{range $o := index .Data "offers"}}
+    <tr>
+      <td>{{$o.Name}}</td>
+      <td>{{if eq $o.Type "product_pct"}}خصم % على منتج{{else if eq $o.Type "category_pct"}}خصم % على فئة{{else if eq $o.Type "invoice_fixed"}}خصم ثابت على الفاتورة{{else if eq $o.Type "buy_x_get_y"}}اشترِ واحصل مجانًا{{else if eq $o.Type "bundle_fixed"}}سعر ثابت لحزمة{{else if eq $o.Type "threshold_pct"}}خصم % عند حد أدنى{{else if eq $o.Type "product_fixed"}}خصم مبلغ ثابت على منتج{{else if eq $o.Type "product_price"}}سعر ترويجي على منتج{{else}}{{$o.Type}}{{end}}</td>
+      <td class="num">{{$o.Value}}{{if eq $o.Type "buy_x_get_y"}} (مجاني: {{$o.FreeQty}}){{end}}{{if eq $o.Type "threshold_pct"}} (الحد: {{$o.Threshold}}){{end}}</td>
+      <td>من {{$o.StartAt}}<br>حتى {{$o.EndAt}}</td>
+      <td>{{if $o.IsActive}}مفعّل{{else}}معطّل{{end}}</td>
+      <td>
+        {{if index $.Data "canManage"}}
+        <a href="/promotions/{{$o.ID}}/edit">تعديل</a> |
+        <a href="/promotions/{{$o.ID}}/toggle">{{if $o.IsActive}}تعطيل{{else}}تفعيل{{end}}</a> |
+        <a href="/promotions/{{$o.ID}}/delete" onclick="return confirm('حذف هذا العرض؟ يُحذف فقط إن لم يُستخدم أبدًا في فاتورة');">حذف</a>
+        {{end}}
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا توجد عروض. أنشئ أول عرض من زر «عرض جديد»</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">أنواع العروض: خصم نسبة مئوية على منتج، خصم نسبة مئوية على فئة، خصم مبلغ ثابت على الفاتورة، اشترِ واحصل على وحدات مجانًا، سعر ثابت لحزمة منتجات، خصم نسبة مئوية عند حد أدنى للفاتورة، خصم مبلغ ثابت على منتج، سعر ترويجي نهائي على منتج. الوحدات المجانية تنقص المخزون وتخفض الربح بتكلفتها دون أن تخفض الصافي</p>
+{{template "chrome-bottom" .}}

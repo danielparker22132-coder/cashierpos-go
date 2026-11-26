@@ -1,0 +1,37 @@
+{{template "chrome-top" .}}
+{{$inv := index .Data "invoice"}}
+<style>@media print { header, nav, footer, .no-print { display: none !important; } }</style>
+<div style="max-width:800px;margin:0 auto">
+  <h1 style="text-align:center">{{.StoreName}}</h1>
+  <p style="text-align:center">فاتورة مبيعات رقم {{$inv.Summary.Number}} — {{$inv.Summary.Date}}</p>
+  <p>العميل: {{$inv.Summary.CustomerName}} | البائع: {{$inv.Summary.UserName}} | طريقة الدفع: {{$inv.Summary.PaymentMethod}}</p>
+  <table>
+    <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>الخصم</th><th>الإجمالي</th></tr></thead>
+    <tbody>
+    {{range $ln := $inv.Lines}}
+      <tr>
+        <td>{{$ln.ProductName}}{{if $ln.IsWeighted}} (وزني){{end}}</td>
+        <td class="num">{{qty $ln.Qty}}</td>
+        <td class="num">{{if approxSaleLine $ln.UnitPrice $ln.Qty $ln.TotalPrice $ln.ItemDiscount}}≈{{end}}{{egp $ln.UnitPrice}}</td>
+        <td class="num">{{egp $ln.ItemDiscount}}</td>
+        <td class="num">{{egp $ln.TotalPrice}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p>
+    الإجمالي: {{egp $inv.Summary.Total}}<br>
+    خصم يدوي: {{egp $inv.Summary.Discount}}<br>
+    خصم العروض: {{egp $inv.Summary.PromoDiscount}}<br>
+    <b>الصافي: {{egp $inv.Summary.Net}}</b><br>
+    المدفوع: {{egp $inv.Summary.Paid}}<br>
+    المتبقي: {{egp $inv.Summary.Remaining}}
+  </p>
+  {{if $inv.Offers}}
+  <p>العروض المطبقة:</p>
+  <ul>{{range $o := $inv.Offers}}<li>{{$o.Name}} — وفّر {{egp $o.Saved}}</li>{{end}}</ul>
+  {{end}}
+  {{if $inv.Summary.IsCanceled}}<p><b>هذه الفاتورة ملغاة</b></p>{{end}}
+  <p class="no-print"><button onclick="window.print()">طباعة</button> <a href="/sales/{{$inv.Summary.ID}}">عودة</a></p>
+</div>
+{{template "chrome-bottom" .}}

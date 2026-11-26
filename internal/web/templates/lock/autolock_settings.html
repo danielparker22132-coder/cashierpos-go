@@ -1,0 +1,36 @@
+{{template "chrome-top" .}}
+<h1>إعدادات القفل التلقائي</h1>
+<p>القفل التلقائي بعد الخمول (0 = معطل). المدة الخاصة بك تتغلب على المدة العامة</p>
+<form method="post" class="form">
+  {{if .Data.CanGlobal}}
+  <label>المدة العامة (دقيقة — 0 = معطل) <input type="number" name="global_minutes" value="{{.Data.Global}}" min="0" max="600"></label>
+  {{else}}
+  <p>المدة العامة الحالية: <strong>{{.Data.Global}} دقيقة</strong> (0 = معطل) — يغيّرها المدير فقط من <a href="/settings">صفحة الإعدادات</a></p>
+  {{end}}
+  <label>مدتي الخاصة (دقيقة — اتركها فارغة لاتباع المدة العامة، 0 = معطل لي فقط)
+    <input type="number" name="own_minutes" value="{{.Data.OwnMinutes}}" min="0" max="600" placeholder="فارغ = المدة العامة">
+  </label>
+  {{if .Data.HasOwn}}<p>لديك مدة خاصة مفعّلة حالياً: {{.Data.OwnMinutes}} دقيقة</p>{{else}}<p>أنت تتبع المدة العامة حالياً</p>{{end}}
+  <button type="submit" class="btn-primary">حفظ إعدادات القفل</button>
+</form>
+{{if .Data.CanGlobal}}
+<h2>المدد الخاصة بالمستخدمين</h2>
+{{if .Data.Overrides}}
+<table>
+  <thead><tr><th>المستخدم</th><th>المدة الخاصة (دقيقة)</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Overrides}}
+    <tr>
+      <td>{{.UserName}}</td>
+      <td class="num">{{.Minutes}}{{if eq .Minutes 0}} (معطل){{end}}</td>
+      <td><form method="post"><input type="hidden" name="clear_override" value="{{.UserName}}"><button type="submit">مسح</button></form></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>لا توجد مدد خاصة لأي مستخدم</p>
+{{end}}
+{{end}}
+<p><a href="/">عودة للرئيسية</a></p>
+{{template "chrome-bottom" .}}

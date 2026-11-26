@@ -1,0 +1,35 @@
+{{template "chrome-top" .}}
+
+<h1>سجل التدقيق</h1>
+<form method="get" class="form" style="max-width:700px">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<label>من <input type="date" name="from" value="{{.Data.Filter.From}}"></label>
+<label>إلى <input type="date" name="to" value="{{.Data.Filter.To}}"></label>
+<label>المستخدم <input name="user" value="{{.Data.Filter.UserName}}"></label>
+<label>الفاتورة <input name="invoice" value="{{if .Data.Filter.InvoiceNumber}}{{.Data.Filter.InvoiceNumber}}{{end}}"></label>
+<label>الإجراء <input name="action" value="{{.Data.Filter.ActionType}}"></label>
+<label><input type="checkbox" name="suspicious" value="1"{{if .Data.Filter.SuspiciousOnly}} checked{{end}}> مشبوه فقط</label>
+<button type="submit">بحث</button>
+</div></form>
+<p><a href="/audit/smart">التقارير الذكية</a> | <a href="/settings">إعدادات المراقبة</a></p>
+<form method="post" action="/audit/monitor/run" style="display:inline"><button type="submit" class="btn-primary">تشغيل المراقبة الذكية الآن</button></form>
+<h2>تنبيهات التدقيق ({{.Data.Unread}} غير مقروءة)</h2>
+{{if .Data.Alerts}}
+<table><tr><th>التنبيه</th><th>القيمة</th><th>العتبة</th><th>التاريخ</th><th>الحالة</th><th>إجراءات</th></tr>
+{{range .Data.Alerts}}<tr>
+<td>{{.AlertMessage}} ({{.UserName}})</td><td class="num">{{egp .AlertValue}}</td><td class="num">{{egp .Threshold}}</td><td>{{.AlertDate}}</td>
+<td>{{if .IsResolved}}تم حلها بواسطة {{.ResolvedBy}}{{else if .IsRead}}مقروءة{{else}}<span class="state-new">جديدة</span>{{end}}</td>
+<td>{{if not .IsRead}}<form method="post" action="/audit/alerts/{{.ID}}/read" style="display:inline"><button type="submit">تعليم كمقروء</button></form>{{end}}
+{{if not .IsResolved}}<form method="post" action="/audit/alerts/{{.ID}}/resolve" style="display:inline"><input name="note" placeholder="ملاحظة الحل"><button type="submit">حلّ</button></form>{{end}}</td>
+</tr>{{end}}</table>
+{{else}}<p>لا توجد تنبيهات تدقيق</p>{{end}}
+<h2>سجل الإجراءات</h2>
+{{if .Data.Entries}}
+<table><tr><th>التاريخ</th><th>المستخدم</th><th>الإجراء</th><th>الفاتورة</th><th>العميل</th><th>ملاحظات</th><th></th></tr>
+{{range .Data.Entries}}<tr>
+<td>{{.LogDate}}</td><td>{{.UserName}}</td><td>{{.ActionType}}</td><td>{{if .InvoiceNumber}}{{.InvoiceNumber}}{{end}}</td><td>{{.CustomerName}}</td><td>{{.Notes}}</td>
+<td><a href="/audit/{{.ID}}">تفاصيل</a></td>
+</tr>{{end}}</table>
+{{else}}<p>لا توجد سجلات في الفترة المحددة</p>{{end}}
+
+{{template "chrome-bottom" .}}

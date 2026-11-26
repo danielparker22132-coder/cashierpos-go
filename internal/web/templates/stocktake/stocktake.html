@@ -1,0 +1,36 @@
+{{template "chrome-top" .}}
+<h1>الجرد الدوري</h1>
+<p class="hint">الجلسة المفتوحة تُعدّ بالمسح أو الإدخال اليدوي. الإغلاق يجمّد العدّ فقط. الاعتماد (مدير فقط، مع سبب إلزامي) هو وحده ما يغيّر المخزون — والمنتجات غير المعدودة لا تُمس أبدًا</p>
+<p>
+  تصفية:
+  <a href="/stocktake">الكل</a> |
+  <a href="/stocktake?status=open">مفتوحة</a> |
+  <a href="/stocktake?status=closed">مغلقة</a> |
+  <a href="/stocktake?status=cancelled">ملغاة</a>
+</p>
+{{if index .Data "canManage"}}
+<form method="post" action="/stocktake/new" class="form">
+  <label>ملاحظة الجلسة <input name="notes" placeholder="مثال: جرد شهري"></label>
+  <button type="submit" class="btn-primary">إنشاء جلسة جرد جديدة</button>
+</form>
+{{end}}
+<table>
+  <thead><tr><th>رقم الجلسة</th><th>أنشأها</th><th>أُنشئت في</th><th>الحالة</th><th>أُغلقت في</th><th>اعتُمدت في</th><th>ملاحظات</th><th></th></tr></thead>
+  <tbody>
+  {{range $st := index .Data "sessions"}}
+    <tr>
+      <td class="num">{{$st.ID}}</td>
+      <td>{{$st.CreatedBy}}</td>
+      <td>{{$st.CreatedAt}}</td>
+      <td>{{$st.Status}}{{if $st.ApprovedAt}} (معتمدة){{end}}</td>
+      <td>{{$st.ClosedAt}}</td>
+      <td>{{$st.ApprovedAt}}</td>
+      <td>{{$st.Notes}}</td>
+      <td><a href="/stocktake/{{$st.ID}}">فتح</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="8">لا توجد جلسات جرد بعد</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

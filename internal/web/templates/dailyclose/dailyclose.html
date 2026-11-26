@@ -1,0 +1,125 @@
+{{template "chrome-top" .}}
+<h1>الإغلاق اليومي</h1>
+<form method="get" action="/dailyclose" class="form inline">
+  <label>التاريخ <input type="date" name="date" value="{{.Data.Date}}"></label>
+  <button type="submit">عرض</button>
+</form>
+{{if .Data.Report}}
+{{with .Data.Report}}
+<table>
+  <thead><tr><th>البند</th><th>القيمة</th></tr></thead>
+  <tbody>
+    <tr><td>إجمالي المبيعات</td><td class="num">{{egp .TotalSales}}</td></tr>
+    <tr><td>إجمالي النقدية (مبيعات نقدية + تحصيل نقدي)</td><td class="num">{{egp .TotalCash}}</td></tr>
+    <tr><td>تحصيل مديونية نقدي</td><td class="num">{{egp .CashDebtCollection}}</td></tr>
+    <tr><td>إجمالي الآجل (المتبقي)</td><td class="num">{{egp .TotalCredit}}</td></tr>
+    <tr><td>إجمالي المرتجعات</td><td class="num">{{egp .TotalReturns}}</td></tr>
+    <tr><td>مرتجعات نقدية خرجت من الدرج</td><td class="num">{{egp .CashReturns}}</td></tr>
+    <tr><td>استرداد إلغاء فوق نقدية البيع (من تحصيلات)</td><td class="num">{{egp .CancelRefundExcess}}</td></tr>
+    <tr><td>إجمالي المصروفات</td><td class="num">{{egp .TotalExpenses}}</td></tr>
+    <tr><td>إجمالي الربح (صافٍ من المرتجعات)</td><td class="num">{{egp .TotalProfit}}</td></tr>
+    <tr><td><strong>صافي النقدية (نقدي − مصروفات − مرتجعات نقدية − استرداد إلغاء فوق نقدية البيع)</strong></td><td class="num"><strong>{{egp .NetCash}}</strong></td></tr>
+    <tr><td>عدد الفواتير</td><td class="num">{{.InvoiceCount}}</td></tr>
+    <tr><td>عدد الفواتير الملغاة</td><td class="num">{{.CanceledCount}}</td></tr>
+    <tr><td>فرق الكاش (مجموع فروق الشيفتات)</td><td class="num">{{egp .CashDifference}}</td></tr>
+  </tbody>
+</table>
+<h2>شيفتات اليوم</h2>
+<table>
+  <thead><tr><th>رقم</th><th>المستخدم</th><th>الحالة</th><th>رصيد الافتتاح</th><th>المتوقع</th><th>الفعلي</th><th>الفرق</th></tr></thead>
+  <tbody>
+  {{range .Shifts}}
+    <tr>
+      <td><a href="/shifts/{{.ID}}">{{.ID}}</a></td>
+      <td>{{.UserName}}</td>
+      <td>{{.Status}}</td>
+      <td class="num">{{egp .OpeningBalance}}</td>
+      <td class="num">{{egp .ExpectedBalance}}</td>
+      <td class="num">{{egp .ActualBalance}}</td>
+      <td class="num">{{egp .Difference}} {{.DifferenceStatus}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7">لا توجد شيفتات في هذا اليوم</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
+
+<h2>تقارير متقدمة</h2>
+<form method="get" action="/dailyclose" class="form inline">
+  <input type="hidden" name="date" value="{{.Data.Date}}">
+  <label>التقرير
+    <select name="report">
+      <option value="top"{{if eq .Data.ReportKind "top"}} selected{{end}}>أفضل المنتجات</option>
+      <option value="bottom"{{if eq .Data.ReportKind "bottom"}} selected{{end}}>أسوأ المنتجات</option>
+      <option value="cashier"{{if eq .Data.ReportKind "cashier"}} selected{{end}}>أفضل كاشير</option>
+      <option value="peak"{{if eq .Data.ReportKind "peak"}} selected{{end}}>ساعات الذروة</option>
+      <option value="profit"{{if eq .Data.ReportKind "profit"}} selected{{end}}>تقرير الربح</option>
+      <option value="expiry"{{if eq .Data.ReportKind "expiry"}} selected{{end}}>تنبيهات الصلاحية</option>
+      <option value="ledger"{{if eq .Data.ReportKind "ledger"}} selected{{end}}>دفتر مخزون منتج</option>
+    </select>
+  </label>
+  <label>من <input type="date" name="from" value="{{.Data.From}}"></label>
+  <label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
+  <label>رقم المنتج (للدفتر) <input name="product_id" value="{{.Data.ProductID}}" inputmode="numeric"></label>
+  <label>أيام الصلاحية <input name="days" value="{{.Data.Days}}" inputmode="numeric"></label>
+  <button type="submit">عرض التقرير</button>
+</form>
+
+{{if .Data.TopProducts}}
+<h3>المنتجات</h3>
+<table>
+  <thead><tr><th>المنتج</th><th>الكمية</th><th>الإيراد</th><th>الربح</th></tr></thead>
+  <tbody>
+  {{range .Data.TopProducts}}
+    <tr><td>{{.ProductName}}</td><td class="num">{{qty .Qty}}</td><td class="num">{{egp .Revenue}}</td><td class="num">{{egp .Profit}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{if .Data.Cashiers}}
+<h3>الكاشير</h3>
+<table>
+  <thead><tr><th>الكاشير</th><th>عدد الفواتير</th><th>إجمالي المبيعات</th></tr></thead>
+  <tbody>
+  {{range .Data.Cashiers}}
+    <tr><td>{{.UserName}}</td><td>{{.InvoiceCount}}</td><td class="num">{{egp .TotalSales}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{if .Data.PeakHours}}
+<h3>ساعات الذروة</h3>
+<table>
+  <thead><tr><th>الساعة</th><th>عدد الفواتير</th><th>إجمالي المبيعات</th></tr></thead>
+  <tbody>
+  {{range .Data.PeakHours}}
+    <tr><td>{{.Hour}}:00</td><td>{{.InvoiceCount}}</td><td class="num">{{egp .TotalSales}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{if .Data.ExpiryAlerts}}
+<h3>تنبيهات الصلاحية</h3>
+<table>
+  <thead><tr><th>المنتج</th><th>تاريخ الانتهاء</th><th>الكمية</th><th>الأيام المتبقية</th></tr></thead>
+  <tbody>
+  {{range .Data.ExpiryAlerts}}
+    <tr><td>{{.ProductName}}</td><td>{{.ExpiryDate}}</td><td class="num">{{qty .Quantity}}</td><td>{{.DaysLeft}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{if .Data.StockLedger}}
+<h3>دفتر المخزون — منتج {{.Data.ProductID}}</h3>
+<table>
+  <thead><tr><th>التاريخ</th><th>النوع</th><th>الكمية</th><th>سعر الشراء</th><th>ملاحظات</th></tr></thead>
+  <tbody>
+  {{range .Data.StockLedger}}
+    <tr><td>{{.MovementDate}}</td><td>{{.MovementType}}</td><td class="num">{{qty .Quantity}}</td><td class="num">{{egp .BuyPrice}}</td><td>{{.Notes}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{template "chrome-bottom" .}}

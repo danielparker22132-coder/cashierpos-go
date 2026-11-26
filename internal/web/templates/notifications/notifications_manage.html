@@ -1,0 +1,18 @@
+{{template "chrome-top" .}}
+
+<h1>إدارة التنبيهات</h1>
+<p><a class="btn btn-primary" href="/notifications/new">+ إنشاء تنبيه</a> | <a href="/notifications">صندوق الوارد</a></p>
+{{if .Data}}
+<table><tr><th>النوع</th><th>العنوان</th><th>الاستهداف</th><th>الإرسال</th><th>الحالة</th><th>إجراءات</th></tr>
+{{range .Data}}<tr>
+<td>{{if eq .Type "price_drop"}}انخفاض سعر{{else if eq .Type "offer"}}عرض{{else if eq .Type "custom"}}مخصص{{else if eq .Type "scheduled"}}مجدول{{else if eq .Type "low_stock"}}مخزون منخفض{{else if eq .Type "audit_alert"}}تنبيه تدقيق{{else}}{{.Type}}{{end}}</td>
+<td>{{.Title}}</td><td>{{.Audience}}</td><td>{{.SendAt}}</td>
+<td>{{if eq .Status "sent"}}مرسلة{{else if eq .Status "scheduled"}}مجدولة{{else if eq .Status "disabled"}}معطلة{{else}}{{.Status}}{{end}}</td>
+<td><a href="/notifications/{{.ID}}/preview">معاينة</a> | <a href="/notifications/{{.ID}}/log">سجل الإرسال</a> | <a href="/notifications/{{.ID}}/edit">تعديل</a>
+<form method="post" action="/notifications/{{.ID}}/toggle" style="display:inline">
+{{if eq .Status "disabled"}}<input type="hidden" name="enabled" value="1"><button type="submit">تفعيل</button>{{else}}<input type="hidden" name="enabled" value="0"><button type="submit">تعطيل</button>{{end}}
+</form></td>
+</tr>{{end}}</table>
+{{else}}<p>لا توجد تنبيهات بعد — أنشئ أول تنبيه</p>{{end}}
+
+{{template "chrome-bottom" .}}

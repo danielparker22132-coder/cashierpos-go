@@ -1,0 +1,36 @@
+{{template "chrome-top" .}}
+<h1>المستحقات اليدوية</h1>
+<p>
+  <a class="btn btn-primary" href="/payables/new">{{template "icon-plus"}} مستحق يدوي جديد</a>
+  <a class="btn" href="/payables/alerts">{{template "icon-bell"}} تنبيهات الاستحقاق</a>
+</p>
+<table>
+  <thead><tr><th>النوع</th><th>الطرف</th><th>المبلغ</th><th>المتبقي</th><th>تاريخ الاستحقاق</th><th>الوصف</th><th>الحالة</th><th>أنشأها</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Payables}}
+    <tr>
+      <td>{{if eq .Kind "vendor"}}مورد{{else}}مندوب{{end}}</td>
+      <td>{{.PartyName}}</td>
+      <td class="num">{{egp .Amount}}</td>
+      <td class="num">{{egp .Remaining}}</td>
+      <td class="num">{{.DueDate}}</td>
+      <td>{{.Description}}</td>
+      <td>{{if eq .Status "paid"}}مسدَّد{{else if eq .Status "partial"}}مسدَّد جزئياً{{else}}مفتوح{{end}}</td>
+      <td>{{.CreatedBy}}</td>
+      <td>
+        {{if ne .Status "paid"}}
+        <form method="post" action="/payables/{{.ID}}/settle" class="form inline">
+          <input name="amount" inputmode="decimal" required size="8" placeholder="المبلغ">
+          <select name="method"><option value="Cash">كاش</option><option value="Visa">فيزا</option><option value="Vodafone Cash">فودافون كاش</option></select>
+          <button type="submit" class="btn-primary">سداد</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="9">لا توجد مستحقات يدوية</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">الكاشير مسموح له بالسداد أيضاً — لكن فقط بما يغطيه الدرج، ويُسجَّل من سدّد ومتى. المتبقي لا ينزل تحت الصفر أبداً</p>
+{{template "chrome-bottom" .}}

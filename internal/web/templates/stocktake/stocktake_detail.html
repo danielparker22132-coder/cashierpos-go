@@ -1,0 +1,56 @@
+{{template "chrome-top" .}}
+{{$st := index .Data "session"}}
+<h1>جلسة جرد رقم {{$st.ID}}</h1>
+<p>
+  الحالة: <b>{{$st.Status}}</b>{{if $st.ApprovedAt}} — معتمدة في {{$st.ApprovedAt}} بواسطة {{$st.ApprovedBy}} (السبب: {{$st.ApproveReason}}){{end}}<br>
+  أنشأها {{$st.CreatedBy}} في {{$st.CreatedAt}} |
+  أُغلقت: {{$st.ClosedAt}} بواسطة {{$st.ClosedBy}} |
+  ملاحظات: {{$st.Notes}}
+</p>
+
+{{if and (index .Data "canCount") (eq $st.Status "open")}}
+<h2>العدّ — مسح باركود</h2>
+<form method="post" action="/stocktake/{{$st.ID}}/scan" class="form">
+  <label>الباركود <input name="barcode" required autofocus placeholder="امسح الباركود (قطعة +1، وزني += الوزن)"></label>
+  <label>كمية صريحة (اختياري — تُثبَّت بدل الإضافة) <input name="qty" placeholder="مثال: 12.5"></label>
+  <button type="submit" class="btn-primary">تسجيل العدّ</button>
+</form>
+<h2>تحديد معدود يدويًا</h2>
+<form method="post" action="/stocktake/{{$st.ID}}/set" class="form">
+  <label>معرّف المنتج (ProductID) <input name="product_id" required></label>
+  <label>الكمية المعدودة <input name="qty" required placeholder="مثال: 12.5"></label>
+  <button type="submit" class="btn-primary">تثبيت الكمية المعدودة</button>
+</form>
+{{end}}
+
+<h2>السطور والفروقات</h2>
+<table>
+  <thead><tr><th>المنتج</th><th>كمية النظام (لقطة أول مسح)</th><th>المعدود</th><th>الفرق</th></tr></thead>
+  <tbody>
+  {{range $ln := $st.Lines}}
+    <tr>
+      <td>{{$ln.ProductName}}</td>
+      <td class="num">{{qty $ln.SystemQty}}</td>
+      <td class="num">{{qty $ln.CountedQty}}</td>
+      <td class="num">{{qty $ln.Difference}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4">لم يُعدّ أي منتج بعد في هذه الجلسة</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<p>
+{{if and (index .Data "canManage") (eq $st.Status "open")}}
+  <form method="post" action="/stocktake/{{$st.ID}}/close" style="display:inline"><button type="submit" class="btn-primary">إغلاق الجلسة (تجميد العدّ)</button></form>
+  <form method="post" action="/stocktake/{{$st.ID}}/cancel" style="display:inline" onsubmit="return confirm('إلغاء هذه الجلسة؟ لن يتغير أي مخزون');"><button type="submit">إلغاء الجلسة</button></form>
+{{end}}
+{{if and (index .Data "canApprove") (eq $st.Status "closed") (eq $st.ApprovedAt "")}}
+  <form method="post" action="/stocktake/{{$st.ID}}/approve" class="form">
+    <label>سبب الاعتماد (إلزامي) <input name="reason" required></label>
+    <button type="submit" class="btn-primary">اعتماد الجرد وتطبيق الفروقات</button>
+  </form>
+{{end}}
+</p>
+<p><a href="/stocktake">عودة للجرد</a></p>
+{{template "chrome-bottom" .}}

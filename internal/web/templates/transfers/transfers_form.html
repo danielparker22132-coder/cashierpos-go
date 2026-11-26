@@ -1,0 +1,19 @@
+{{template "chrome-top" .}}
+<h1>تسجيل تحويل إلكتروني</h1>
+<form method="post" action="/transfers/new" class="form">
+  <label>اسم المرسل * <input name="sender_name" required></label>
+  <label>المبلغ (ج.م) * <input name="amount" inputmode="decimal" required></label>
+  <label>طريقة التحويل *
+    <select name="method" required>
+      <option value="فودافون كاش">فودافون كاش</option>
+      <option value="إنستاباي">إنستاباي</option>
+      <option value="فيزا">فيزا</option>
+      <option value="بطاقة">بطاقة</option>
+      <option value="تحويل بنكي">تحويل بنكي</option>
+    </select>
+  </label>
+  <label>المرجع <input name="reference" placeholder="مثال: رقم العملية أو الإيصال"></label>
+  <button type="submit" class="btn-primary">تسجيل (قيد المراجعة)</button>
+  <a href="/transfers">إلغاء</a>
+</form>
+{{template "chrome-bottom" .}}

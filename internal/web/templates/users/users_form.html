@@ -1,0 +1,36 @@
+{{template "chrome-top" .}}
+
+<h1>{{if .Data.IsNew}}مستخدم جديد{{else}}تعديل مستخدم: {{.Data.User.UserName}}{{end}}</h1>
+<form method="post" class="form">
+{{if .Data.IsNew}}<label>اسم المستخدم <input name="username" value="{{.Data.User.UserName}}" required></label>{{end}}
+<label>الاسم الكامل <input name="full_name" value="{{.Data.User.FullName}}"></label>
+<label>كلمة السر {{if .Data.IsNew}}(مطلوبة){{else}}(فارغة = تبقى القديمة){{end}} <span class="pw-wrap"><input type="password" name="password"{{if .Data.IsNew}} required{{end}} style="box-sizing:border-box;padding-inline-end:2.6em"><button type="button" data-pw-eye title="إظهار كلمة المرور" aria-label="إظهار كلمة المرور" aria-pressed="false" class="pw-eye-btn">{{template "icon-eye-open"}}{{template "icon-eye-off"}}</button></span></label>
+<label>الدور <select name="role">{{range .Data.Roles}}<option value="{{.}}"{{if eq . $.Data.User.Role}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<p class="hint">الأدوار: admin مدير النظام · manager مدير (يساوي المدير في كل الصلاحيات) · cashier كاشير · supervisor مشرف · warehouse أمين مخزن</p>
+<label><input type="checkbox" name="is_active" value="1"{{if .Data.User.IsActive}} checked{{end}}> مفعّل</label>
+<button type="submit" class="btn-primary">{{if .Data.IsNew}}إنشاء{{else}}حفظ التعديلات{{end}}</button>
+</form>
+<p><a href="/users">عودة للمستخدمين</a></p>
+
+<script>
+(function(){
+  document.querySelectorAll('button[data-pw-eye]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var wrap = btn.closest('.pw-wrap');
+      var input = wrap ? wrap.querySelector('input') : null;
+      if(!input) return;
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+      var label = show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور';
+      btn.setAttribute('title', label);
+      btn.setAttribute('aria-label', label);
+      var open = btn.querySelector('.pw-eye-open');
+      var closed = btn.querySelector('.pw-eye-closed');
+      if(open) open.style.display = show ? 'none' : '';
+      if(closed) closed.style.display = show ? '' : 'none';
+    });
+  });
+})();
+</script>
+{{template "chrome-bottom" .}}

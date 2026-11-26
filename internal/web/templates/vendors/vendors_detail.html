@@ -1,0 +1,55 @@
+{{template "chrome-top" .}}
+<h1>المورد: {{.Data.Ledger.Vendor.Name}}</h1>
+<p>الهاتف: <span class="num">{{.Data.Ledger.Vendor.Phone}}</span> · العنوان: {{.Data.Ledger.Vendor.Address}}</p>
+<p>الرصيد الحالي: <strong class="num">{{egp .Data.Ledger.Vendor.CurrentBalance}}</strong> · حد الائتمان: <span class="num">{{egp .Data.Ledger.Vendor.CreditLimit}}</span></p>
+<p>
+  <a class="btn" href="/vendors/{{.Data.Ledger.Vendor.ID}}/edit">تعديل</a>
+  <a class="btn" href="/vendors/{{.Data.Ledger.Vendor.ID}}/ledger">دفتر الأستاذ</a>
+  <form method="post" action="/vendors/{{.Data.Ledger.Vendor.ID}}/delete" style="display:inline" onsubmit="return confirm('هل تريد حذف هذا المورد؟ لا يمكن حذف مورد لديه فواتير شراء')">
+    <button type="submit">حذف</button>
+  </form>
+</p>
+{{if gt .Data.Ledger.Vendor.CurrentBalance 0}}
+<h2>سداد مورد</h2>
+<form method="post" action="/vendors/{{.Data.Ledger.Vendor.ID}}/pay" class="form">
+  <label>مبلغ السداد (ج.م) <input name="amount" inputmode="decimal" required value="{{.Data.BalanceEGP}}"></label>
+  <label>فاتورة شراء محددة (اختياري)
+    <select name="purchase_id">
+      <option value="">— سداد عام على الرصيد —</option>
+      {{range .Data.Ledger.Purchases}}{{if gt .Remaining 0}}<option value="{{.PurchaseID}}">{{.InvoiceNo}} — متبقٍّ {{egp .Remaining}}</option>{{end}}{{end}}
+    </select>
+  </label>
+  <label>طريقة الدفع
+    <select name="method">
+      <option value="Cash">كاش</option>
+      <option value="Visa">فيزا</option>
+      <option value="Vodafone Cash">فودافون كاش</option>
+    </select>
+  </label>
+  <label>ملاحظات <input name="notes"></label>
+  <button type="submit" class="btn-primary">تسجيل السداد</button>
+</form>
+<p class="hint">الدفع النقدي يتطلب شيفتاً مفتوحاً ولا يتجاوز رصيد الدرج. غير النقدي لا يمس الدرج</p>
+{{else}}
+<p>لا توجد مديونية على هذا المورد</p>
+{{end}}
+<h2>فواتير الشراء</h2>
+<table>
+  <thead><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الاستحقاق</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Ledger.Purchases}}
+    <tr>
+      <td class="num">{{.InvoiceNo}}</td>
+      <td class="num">{{.Date}}</td>
+      <td class="num">{{egp .Total}}</td>
+      <td class="num">{{egp .Paid}}</td>
+      <td class="num">{{egp .Remaining}}</td>
+      <td class="num">{{.DueDate}}</td>
+      <td><a href="/purchases/{{.PurchaseID}}">التفاصيل</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7">لا توجد فواتير شراء</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

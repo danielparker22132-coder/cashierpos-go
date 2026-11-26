@@ -1,0 +1,134 @@
+{{/* Chrome partials shared by every page. Each page file is its own
+top-level template (named after the file) and wraps its content with
+chrome-top / chrome-bottom — page bodies must NOT share one {{define
+"content"}} name, because all files are parsed into a single template
+set and a shared name would make every page render the same body. */}}
+{{define "chrome-top"}}<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — {{.StoreName}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body{{if .DarkMode}} class="dark"{{end}}>
+<header class="topbar">
+  <div class="brand">{{if eq .StoreName "كاشير بلس"}}كاشير بلس{{else}}{{.StoreName}} — كاشير بلس{{end}}</div>
+  {{if .User}}<div class="userbox">
+    <span class="username">{{template "icon-user"}} {{.User.FullName}} ({{.User.UserName}})</span>
+    <span class="role">الدور: {{roleName .User.Role}}</span>
+    {{if can .User "view_audit"}}{{if gt .UnreadAudit 0}}<a class="bell-link" href="/audit" title="تنبيهات تدقيق غير مقروءة">{{template "icon-bell"}} تنبيهات التدقيق <span class="count num">{{.UnreadAudit}}</span></a>{{end}}{{end}}
+    {{if gt .UnreadNotif 0}}<a class="bell-link" href="/notifications" title="تنبيهات غير مقروءة">{{template "icon-bell"}} التنبيهات <span class="count num">{{.UnreadNotif}}</span></a>{{end}}
+    <a class="toplink" href="/change-password">تغيير كلمة السر</a>
+    <a class="toplink" href="/logout" onclick="return confirm('هل تريد تسجيل الخروج؟')">خروج</a>
+  </div>{{end}}
+</header>
+{{if .MustChange}}<div class="alert warn">{{template "icon-alert"}} يجب تغيير كلمة السر الافتراضية قبل المتابعة — <a href="/change-password?forced=1">غيّرها الآن</a></div>{{end}}
+{{if .Error}}<div class="alert err" role="alert">{{.Error}}</div>{{end}}
+{{if .Notice}}<div class="alert ok" role="status">{{.Notice}}</div>{{end}}
+{{if .User}}<nav class="mainnav" aria-label="التنقل الرئيسي">
+  <a href="/"{{if eq .ActiveNav "hub"}} class="active"{{end}}>الرئيسية</a>
+  {{if can .User "create_invoice"}}<a href="/sales"{{if eq .ActiveNav "sales"}} class="active"{{end}}>المبيعات</a>{{end}}
+  {{if can .User "view_products"}}<a href="/products"{{if eq .ActiveNav "products"}} class="active"{{end}}>المنتجات</a>{{end}}
+  {{if can .User "manage_customers"}}<a href="/customers"{{if eq .ActiveNav "customers"}} class="active"{{end}}>العملاء</a>{{end}}
+  {{if or (can .User "manage_vendors") (can .User "create_vendor")}}<a href="/vendors"{{if eq .ActiveNav "vendors"}} class="active"{{end}}>الموردون</a>{{end}}
+  {{if can .User "open_shift"}}<a href="/shifts"{{if eq .ActiveNav "shifts"}} class="active"{{end}}>الشيفت</a>{{end}}
+  {{if can .User "do_return"}}<a href="/returns"{{if eq .ActiveNav "returns"}} class="active"{{end}}>المرتجعات</a>{{end}}
+  {{if can .User "register_expense"}}<a href="/expenses"{{if eq .ActiveNav "expenses"}} class="active"{{end}}>المصروفات</a>{{end}}
+  {{if can .User "manage_promotions"}}<a href="/promotions"{{if eq .ActiveNav "promos"}} class="active"{{end}}>العروض</a>{{end}}
+  {{if can .User "stocktake_count"}}<a href="/stocktake"{{if eq .ActiveNav "stocktake"}} class="active"{{end}}>الجرد</a>{{end}}
+  {{if can .User "view_reports"}}<a href="/reports"{{if eq .ActiveNav "reports"}} class="active"{{end}}>التقارير</a>{{end}}
+  {{if can .User "view_audit"}}<a href="/audit"{{if eq .ActiveNav "audit"}} class="active"{{end}}>التدقيق</a>{{end}}
+  <a href="/notifications"{{if eq .ActiveNav "notifications"}} class="active"{{end}}>التنبيهات{{if gt .UnreadNotif 0}} <span class="count num">{{.UnreadNotif}}</span>{{end}}</a>
+  <a href="/orders"{{if eq .ActiveNav "orders"}} class="active"{{end}}>طلبات المتجر <span class="count num"{{if eq .PendingOrders 0}} hidden{{end}} id="orders-badge">{{.PendingOrders}}</span> <span class="count num evidence-badge"{{if eq .PendingEvidence 0}} hidden{{end}} id="orders-evidence-badge">{{.PendingEvidence}}</span></a>
+  {{if can .User "manage_users"}}<a href="/users"{{if eq .ActiveNav "users"}} class="active"{{end}}>المستخدمون</a>{{end}}
+  {{if can .User "access_settings"}}<a href="/settings"{{if eq .ActiveNav "settings"}} class="active"{{end}}>الإعدادات</a>{{end}}
+</nav>
+<div id="orders-banner" class="alert warn" role="alert"{{if eq .PendingOrders 0}} style="display:none"{{end}}>{{template "icon-bell"}} تنبيه عمليات فوري — <span id="orders-banner-count">{{.PendingOrders}}</span> طلب معلق يحتاج متابعة<span id="orders-banner-evidence-wrap"{{if eq .PendingEvidence 0}} style="display:none"{{end}}>، منها <span id="orders-banner-evidence">{{.PendingEvidence}}</span> بانتظار مراجعة دليل الدفع</span> <a href="/orders">عرض الطلبات</a> <button type="button" class="btn btn-small orders-refresh-now">تحديث الآن</button></div>{{end}}
+<main>
+{{end}}
+
+{{define "chrome-bottom"}}
+</main>
+<footer>CashierPOS Go — يعمل محليًا على SQLite</footer>
+{{/* H-9 hub-X exit confirmation: beforeunload asks before the tab /
+   window is closed (browsers show their own generic text — the Arabic
+   wording cannot be forced). In-app navigation (links / form submits)
+   sets a bypass flag first, so moving between screens never prompts:
+   the prompt fires only on tab/window close, reload, or leaving the
+   app — the web equivalent of PyQt closeEvent(). This also covers the
+   login page, so its "will be asked on close" line is now true. */}}
+<script>
+(function(){
+  var navigating = false;
+  document.addEventListener("click", function (ev) {
+    var a = ev.target.closest ? ev.target.closest("a[href]") : null;
+    if (a) {
+      navigating = true;
+      setTimeout(function () { navigating = false; }, 2000);
+    }
+  }, true);
+  document.addEventListener("submit", function () { navigating = true; }, true);
+  window.addEventListener("beforeunload", function (e) {
+    if (navigating) { return; }
+    e.preventDefault();
+    e.returnValue = "";
+  });
+})();
+</script>
+{{if .User}}<script>
+(function(){
+  var badge=document.getElementById('orders-badge');
+  var evBadge=document.getElementById('orders-evidence-badge');
+  var banner=document.getElementById('orders-banner');
+  var bannerCount=document.getElementById('orders-banner-count');
+  var bannerEv=document.getElementById('orders-banner-evidence');
+  var bannerEvWrap=document.getElementById('orders-banner-evidence-wrap');
+  var timer=null;
+  function poll(){
+    Promise.all([
+      fetch('/api/staff/orders/pending-count',{credentials:'same-origin'}).then(function(r){if(!r.ok){throw new Error('http');}return r.json();}),
+      fetch('/api/staff/orders/pending-evidence',{credentials:'same-origin'}).then(function(r){if(!r.ok){throw new Error('http');}return r.json();})
+    ]).then(function(res){
+      var n=res[0].pendingCount||0, e=res[1].pendingEvidence||0;
+      // PR-M2: the poll toggles visibility, mirroring the topbar bells
+      // and the banner — a zero count hides the span, it never shows "0".
+      if(badge){badge.textContent=n;badge.hidden=n===0;}
+      if(evBadge){evBadge.textContent=e;evBadge.hidden=e===0;}
+      if(banner){banner.style.display=n>0?'':'none';}
+      if(bannerCount){bannerCount.textContent=n;}
+      if(bannerEv){bannerEv.textContent=e;}
+      if(bannerEvWrap){bannerEvWrap.style.display=e>0?'':'none';}
+    }).catch(function(){if(timer){clearInterval(timer);timer=null;}});
+  }
+  document.querySelectorAll('.orders-refresh-now').forEach(function(b){b.addEventListener('click',poll);});
+  poll();
+  timer=setInterval(poll,5000);
+})();
+{{/* H-10 auto-lock heartbeat: mouse/key activity pings GET /api/activity
+     at most once per 60 s, mirroring the server persist throttle. Any
+     authenticated request refreshes the idle clock in the autoLock
+     middleware, so the ping itself is the refresh — a user composing a
+     sale without submitting stays unlocked while active. A locked (423),
+     logged-out or forbidden response stops the heartbeat; the next
+     navigation then shows the lock/login page as usual. */}}
+(function(){
+  var lastPing = 0;
+  var stopped = false;
+  function ping(){
+    if (stopped) { return; }
+    var now = Date.now();
+    if (now - lastPing < 60000) { return; }
+    lastPing = now;
+    fetch('/api/activity', {credentials: 'same-origin'}).then(function (r) {
+      if (!r.ok) { stopped = true; }
+    }).catch(function () { stopped = true; });
+  }
+  ['mousemove', 'keydown', 'click', 'wheel'].forEach(function (ev) {
+    window.addEventListener(ev, ping, {passive: true});
+  });
+})();
+</script>{{end}}
+</body>
+</html>
+{{end}}

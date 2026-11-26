@@ -1,0 +1,22 @@
+{{template "chrome-top" .}}
+
+<h1>تفاصيل سجل التدقيق #{{.Data.Entry.ID}}</h1>
+<table>
+<tr><th>المستخدم</th><td>{{.Data.Entry.UserName}}</td></tr>
+<tr><th>الإجراء</th><td>{{.Data.Entry.ActionType}} ({{.Data.Entry.ActionCategory}})</td></tr>
+<tr><th>رقم الفاتورة</th><td>{{.Data.Entry.InvoiceNumber}}</td></tr>
+<tr><th>العميل</th><td>{{.Data.Entry.CustomerName}}</td></tr>
+<tr><th>التاريخ</th><td>{{.Data.Entry.LogDate}}</td></tr>
+<tr><th>ملاحظات</th><td>{{.Data.Entry.Notes}}</td></tr>
+</table>
+<h2>تفاصيل البنود</h2>
+{{if .Data.Details}}
+<table><tr><th>المنتج</th><th>الكمية قبل</th><th>الكمية بعد</th><th>التغيير</th><th>السعر قبل</th><th>السعر بعد</th><th>إجمالي البند</th><th>ملاحظات</th></tr>
+{{range .Data.Details}}<tr>
+<td>{{.ProductName}}</td><td class="num">{{qty .QuantityBefore}}</td><td class="num">{{qty .QuantityAfter}}</td><td class="num">{{qty .QuantityChange}}</td>
+<td class="num">{{egp .PriceBefore}}</td><td class="num">{{egp .PriceAfter}}</td><td class="num">{{egp .LineTotal}}</td><td>{{.Notes}}</td>
+</tr>{{end}}</table>
+{{else}}<p>لا توجد بنود تفصيلية لهذا السجل</p>{{end}}
+<p><a href="/audit">عودة لسجل التدقيق</a></p>
+
+{{template "chrome-bottom" .}}

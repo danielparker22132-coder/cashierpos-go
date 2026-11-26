@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — {{.StoreName}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body{{if .DarkMode}} class="dark"{{end}}>
+<header class="topbar">
+  <div class="brand">{{if eq .StoreName "كاشير بلس"}}كاشير بلس{{else}}{{.StoreName}} — كاشير بلس{{end}}</div>
+  {{if .User}}<div class="userbox">{{template "icon-user"}} {{.User.FullName}} ({{.User.UserName}}) <span class="role">الدور: {{.User.Role}}</span></div>{{end}}
+</header>
+{{if .Error}}<div class="alert err">{{.Error}}</div>{{end}}
+{{if .Notice}}<div class="alert ok">{{.Notice}}</div>{{end}}
+<main>
+
+<h1>الشاشة مقفلة</h1>
+<p>تم قفل الشاشة بسبب الخمول. الجلسة والشيفت والسلة كما هي — أدخل كلمة السر لفتح القفل والعودة لما كنت فيه</p>
+<p>المستخدم: <strong>{{.Data.Username}}</strong></p>
+<form method="post" action="/lock" class="form">
+  <input type="hidden" name="next" value="{{.Data.Next}}">
+  <label>كلمة السر
+    <span class="pw-wrap">
+      <input type="password" name="password" required autofocus autocomplete="current-password" style="box-sizing:border-box;padding-inline-end:2.6em">
+      <button type="button" data-pw-eye title="إظهار كلمة المرور" aria-label="إظهار كلمة المرور" aria-pressed="false" class="pw-eye-btn">
+        {{template "icon-eye-open"}}
+        {{template "icon-eye-off"}}
+      </button>
+    </span>
+  </label>
+  <button type="submit" class="btn-primary">فتح القفل</button>
+</form>
+{{if .Data.Attempts}}<p>محاولات متبقية قبل الخروج الإجباري: {{.Data.Attempts}}</p>{{end}}
+<p>إغلاق هذه الصفحة أو مغادرتها بدون فتح القفل يعيد إظهار القفل عند الطلب التالي — التطبيق لا يُترك مفتوحاً أبداً</p>
+<p><a href="/logout">تسجيل الخروج</a></p>
+
+</main>
+<script>
+(function(){
+  document.querySelectorAll('button[data-pw-eye]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var wrap = btn.closest('.pw-wrap');
+      var input = wrap ? wrap.querySelector('input') : null;
+      if(!input) return;
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+      var label = show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور';
+      btn.setAttribute('title', label);
+      btn.setAttribute('aria-label', label);
+      var open = btn.querySelector('.pw-eye-open');
+      var closed = btn.querySelector('.pw-eye-closed');
+      if(open) open.style.display = show ? 'none' : '';
+      if(closed) closed.style.display = show ? '' : 'none';
+    });
+  });
+})();
+</script>
+<footer>CashierPOS Go — يعمل محليًا على SQLite</footer>
+</body>
+</html>

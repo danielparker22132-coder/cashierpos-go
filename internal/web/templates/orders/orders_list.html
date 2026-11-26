@@ -1,0 +1,39 @@
+{{template "chrome-top" .}}
+<h1>طلبات المتجر</h1>
+<p class="hint">طلبات الأونلاين الواردة للمحل — تُقرأ من المخزن المحلي على هذا الجهاز، والمزامنة مع CloudApi غير مفعلة بعد</p>
+<p>
+  تصفية:
+  <a href="/orders">الكل</a> |
+  <a href="/orders?status=CREATED">جديدة</a> |
+  <a href="/orders?status=PREPARED">قيد التجهيز</a> |
+  <a href="/orders?status=READY">جاهزة</a> |
+  <a href="/orders?status=DELIVERED">تم التوصيل</a> |
+  <a href="/orders?status=COMPLETED">مكتملة</a> |
+  <a href="/orders?status=CANCELED">ملغاة</a>
+</p>
+<table>
+  <thead><tr><th>رقم الطلب</th><th>العميل</th><th>الأصناف</th><th>الإجمالي</th><th>الحالة</th><th>الدفع</th><th>دليل الدفع</th><th>التاريخ</th><th></th></tr></thead>
+  <tbody>
+  {{range $o := index .Data "orders"}}
+    <tr>
+      <td class="num">#{{$o.ID}}</td>
+      <td>{{$o.CustomerName}}{{if $o.CustomerPhone}}<br><span class="hint">{{$o.CustomerPhone}}</span>{{end}}</td>
+      <td>{{range $it := $o.Items}}{{$it.Name}} × {{qty $it.Qty}}<br>{{end}}</td>
+      <td class="num">{{egp $o.Total}}</td>
+      <td>{{if eq $o.Status "CREATED"}}جديد{{else if eq $o.Status "PREPARED"}}قيد التجهيز{{else if eq $o.Status "READY"}}جاهز{{else if eq $o.Status "DELIVERED"}}تم التوصيل{{else if eq $o.Status "COMPLETED"}}مكتمل{{else if eq $o.Status "CANCELED"}}ملغى{{else}}{{$o.Status}}{{end}}</td>
+      <td>{{if eq $o.PaymentStatus "PENDING"}}بانتظار الدفع{{else if eq $o.PaymentStatus "AWAITING_VERIFICATION"}}بانتظار مراجعة الدليل{{else if eq $o.PaymentStatus "VERIFIED"}}تم التحقق{{else if eq $o.PaymentStatus "PAID"}}مدفوع{{else}}{{$o.PaymentStatus}}{{end}}</td>
+      <td>{{if $o.EvidenceRef}}{{$o.EvidenceRef}}{{else}}—{{end}}</td>
+      <td>{{$o.CreatedAt}}</td>
+      <td>
+        {{if and (index $.Data "canManage") (eq $o.PaymentStatus "AWAITING_VERIFICATION")}}
+        <form method="post" action="/orders/{{$o.ID}}/resolve-evidence" style="display:inline"><button type="submit" class="btn btn-small btn-primary">تحقق من الدليل</button></form>
+        {{end}}
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="9">لا توجد طلبات أونلاين</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">الجرس يحدَّث كل 5 ثوانٍ من المخزن المحلي — عند وصول طلب جديد يظهر العدد هنا وفي شريط التنقل</p>
+{{template "chrome-bottom" .}}

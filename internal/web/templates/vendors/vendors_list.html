@@ -1,0 +1,34 @@
+{{template "chrome-top" .}}
+<h1>الموردون</h1>
+<p>
+  <a class="btn btn-primary" href="/vendors/new">{{template "icon-plus"}} مورد جديد</a>
+  <a class="btn btn-primary" href="/purchases/new">{{template "icon-receipt"}} فاتورة شراء جديدة</a>
+  <a class="btn" href="/payables">المستحقات اليدوية</a>
+</p>
+{{if .Data.Alerts}}
+<div class="alert warn" role="alert">{{template "icon-alert"}} يوجد {{len .Data.Alerts}} مورد له مستحقات قريبة (خلال 30 يوماً أو متأخرة):
+  {{range .Data.Alerts}}{{.VendorName}} (يستحق {{.DueDate}} — {{egp .Remaining}}) · {{end}}
+</div>
+{{end}}
+<form method="get" action="/vendors" class="form inline">
+  <label>بحث بالاسم أو الهاتف <input name="q" value="{{.Data.Q}}"></label>
+  <button type="submit">بحث</button>
+</form>
+<table>
+  <thead><tr><th>الاسم</th><th>الهاتف</th><th>الرصيد الحالي</th><th>حد الائتمان</th><th>الحالة</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Vendors}}
+    <tr>
+      <td><a href="/vendors/{{.ID}}">{{.Name}}</a></td>
+      <td class="num">{{.Phone}}</td>
+      <td class="num">{{egp .CurrentBalance}}</td>
+      <td class="num">{{egp .CreditLimit}}</td>
+      <td>{{if .IsActive}}نشط{{else}}موقوف{{end}}</td>
+      <td><a href="/vendors/{{.ID}}/edit">تعديل</a> · <a href="/vendors/{{.ID}}/ledger">دفتر الأستاذ</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6">لا يوجد موردون مطابقون</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "chrome-bottom" .}}

@@ -1,0 +1,61 @@
+{{template "chrome-top" .}}
+<h1>العميل: {{.Data.Customer.Name}}</h1>
+<p>الهاتف: <span class="num">{{.Data.Customer.Phone}}</span> · العنوان: {{.Data.Customer.Address}}</p>
+<p>الرصيد الحي (متبقي الفواتير): <strong class="num">{{egp .Data.Customer.Balance}}</strong> · حد الائتمان: <span class="num">{{egp .Data.Customer.CreditLimit}}</span></p>
+<p>
+  <a class="btn" href="/customers/{{.Data.Customer.ID}}/edit">تعديل</a>
+  <a class="btn" href="/customers/{{.Data.Customer.ID}}/statement">كشف حساب</a>
+  {{if ne .Data.Customer.ID 1}}
+  <form method="post" action="/customers/{{.Data.Customer.ID}}/delete" style="display:inline" onsubmit="return confirm('هل تريد حذف هذا العميل؟ لا يمكن حذف عميل لديه فواتير')">
+    <button type="submit">حذف</button>
+  </form>
+  {{else}}
+  <span class="hint">العميل النقدي الافتراضي لا يمكن حذفه</span>
+  {{end}}
+</p>
+{{if gt .Data.Customer.Balance 0}}
+<h2>سداد عام (يُوزع على أقدم الفواتير المفتوحة أولاً)</h2>
+<form method="post" action="/customers/{{.Data.Customer.ID}}/pay" class="form">
+  <label>مبلغ السداد (ج.م) <input name="amount" inputmode="decimal" required value="{{.Data.BalanceEGP}}"></label>
+  <label>طريقة الدفع
+    <select name="method">
+      <option value="Cash">كاش</option>
+      <option value="Visa">فيزا</option>
+      <option value="Vodafone Cash">فودافون كاش</option>
+    </select>
+  </label>
+  <label>ملاحظات <input name="notes"></label>
+  <button type="submit" class="btn-primary">تسجيل السداد</button>
+</form>
+<p class="hint">الدفع النقدي يتطلب شيفتاً مفتوحاً. الدفع الزائد عن المديونية مرفوض</p>
+{{else}}
+<p>هذا العميل ليس لديه مديونية</p>
+{{end}}
+{{if .Data.Statement}}
+<h2>فواتير مفتوحة</h2>
+<table>
+  <thead><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th></th></tr></thead>
+  <tbody>
+  {{range .Data.Statement.Invoices}}
+    {{if and (not .IsCanceled) (gt .Remaining 0)}}
+    <tr>
+      <td class="num"><a href="/sales/{{.InvoiceID}}">{{.InvoiceNo}}</a></td>
+      <td class="num">{{.Date}}</td>
+      <td class="num">{{egp .NetAmount}}</td>
+      <td class="num">{{egp .PaidAmount}}</td>
+      <td class="num">{{egp .Remaining}}</td>
+      <td>
+        <form method="post" action="/customers/{{$.Data.Customer.ID}}/pay-invoice" class="form inline">
+          <input type="hidden" name="invoice_id" value="{{.InvoiceID}}">
+          <input name="amount" inputmode="decimal" required size="8" placeholder="المبلغ">
+          <select name="method"><option value="Cash">كاش</option><option value="Visa">فيزا</option><option value="Vodafone Cash">فودافون كاش</option></select>
+          <button type="submit" class="btn-primary">سداد هذه الفاتورة</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{template "chrome-bottom" .}}
