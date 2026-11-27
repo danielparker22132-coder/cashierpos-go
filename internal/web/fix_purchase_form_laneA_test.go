@@ -334,3 +334,41 @@ func TestPurchaseForm_CenteredFieldTextRule(t *testing.T) {
 		}
 	}
 }
+
+// TestPurchaseForm_WideProductFieldFits50CharName — F-B1 regression:
+// a 50-char Arabic product name needs a 384px-wide field (measured live:
+// scrollWidth 384 at the old 321px input), so the product inputs are
+// min-width:26em (416px @ 16px font, 32px of margin), size 40, inside a
+// 1120px form, and main is wide enough (1160px) to hold that form.
+// Deterministic template/CSS assertions only — no pixel measurements.
+func TestPurchaseForm_WideProductFieldFits50CharName(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	e.createProduct(admin, "PF-K1", "سكر", "15.00", "100")
+
+	code, body := e.get(admin, "/purchases/new")
+	if code != http.StatusOK {
+		t.Fatalf("GET /purchases/new: status = %d, want 200", code)
+	}
+	if n := strings.Count(body, `size="40" style="min-width:26em"`); n != 5 {
+		t.Fatalf("wide product inputs (size 40, min-width 26em) = %d, want 5", n)
+	}
+	if n := strings.Count(body, `max-width:1120px`); n != 1 {
+		t.Fatalf("form max-width:1120px occurrences = %d, want 1", n)
+	}
+	for _, old := range []string{`size="32"`, `min-width:20em`, `max-width:1020px`} {
+		if strings.Contains(body, old) {
+			t.Fatalf("form still contains the old narrow value %q (F-B1)", old)
+		}
+	}
+
+	code, css := e.get(admin, "/static/style.css")
+	if code != http.StatusOK {
+		t.Fatalf("GET /static/style.css: status = %d, want 200", code)
+	}
+	if !strings.Contains(css, `main{max-width:1160px`) {
+		t.Fatalf("style.css lacks main{max-width:1160px — the 1120px form would not fit in the old 1100px main (F-B1)")
+	}
+	if strings.Contains(css, `main{max-width:1100px`) {
+		t.Fatalf("style.css still contains the old main{max-width:1100px (F-B1)")
+	}
+}
