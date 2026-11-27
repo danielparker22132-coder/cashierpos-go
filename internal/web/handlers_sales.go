@@ -830,6 +830,14 @@ func (s *Server) handlePromoToggle(w http.ResponseWriter, r *http.Request) {
 		s.renderErr(w, r, "العرض", err)
 		return
 	}
+	// FIX-29 lane A: toggle is POST-only, same shape as handlePromoDelete
+	// (fix-28 lane B). A state-changing GET link lets any prefetch or
+	// crawler flip an offer; a non-POST request now redirects to the list
+	// with no action.
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/promotions", http.StatusSeeOther)
+		return
+	}
 	cur, err := s.Store.GetOffer(r.Context(), u, id)
 	if err != nil {
 		s.renderErr(w, r, "العرض", err)
@@ -981,6 +989,14 @@ func (s *Server) handleStocktakeClose(w http.ResponseWriter, r *http.Request) {
 		s.renderErr(w, r, "الجرد", err)
 		return
 	}
+	// FIX-29 lane C (R29-C-F3): closing is POST-only. The route mutated
+	// on GET, so a plain link/prefetch could close a session. A non-POST
+	// request now redirects to the detail page with no action, the same
+	// shape as the sibling HTML mutating handlers.
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, fmt.Sprintf("/stocktake/%d", id), http.StatusSeeOther)
+		return
+	}
 	if _, err := s.Store.CloseStocktake(r.Context(), u, id); err != nil {
 		s.renderErr(w, r, "الجرد", err)
 		return
@@ -995,6 +1011,12 @@ func (s *Server) handleStocktakeCancel(w http.ResponseWriter, r *http.Request) {
 		s.renderErr(w, r, "الجرد", err)
 		return
 	}
+	// FIX-29 lane C (R29-C-F3): cancelling is POST-only, same as close
+	// above — a non-POST request redirects with no action.
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, fmt.Sprintf("/stocktake/%d", id), http.StatusSeeOther)
+		return
+	}
 	if _, err := s.Store.CancelStocktake(r.Context(), u, id); err != nil {
 		s.renderErr(w, r, "الجرد", err)
 		return
@@ -1007,6 +1029,15 @@ func (s *Server) handleStocktakeApprove(w http.ResponseWriter, r *http.Request) 
 	id, err := pathID(r, "id")
 	if err != nil {
 		s.renderErr(w, r, "الجرد", err)
+		return
+	}
+	// FIX-29 lane B: approval is POST-only. Approving applies the counted
+	// stock diffs, so a GET must never trigger it (a prefetched/crawled
+	// link would otherwise silently rewrite stock). A non-POST request
+	// now redirects to the detail page with no action, the same shape as
+	// the sibling HTML mutating handlers (promo delete, stocktake create).
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, fmt.Sprintf("/stocktake/%d", id), http.StatusSeeOther)
 		return
 	}
 	if _, err := s.Store.ApproveStocktake(r.Context(), u, id, r.FormValue("reason")); err != nil {

@@ -23,7 +23,7 @@
       <td>
         {{if index $.Data "canManage"}}
         <a href="/promotions/{{$o.ID}}/edit">تعديل</a> |
-        <a href="/promotions/{{$o.ID}}/toggle">{{if $o.IsActive}}تعطيل{{else}}تفعيل{{end}}</a> |
+        <form method="post" action="/promotions/{{$o.ID}}/toggle" style="display:inline"><button type="submit">{{if $o.IsActive}}تعطيل{{else}}تفعيل{{end}}</button></form> |
         <form method="post" action="/promotions/{{$o.ID}}/delete" style="display:inline"><button type="submit" title="يُحذف فقط إن لم يُستخدم أبدًا في فاتورة">حذف</button></form>
         {{end}}
       </td>
