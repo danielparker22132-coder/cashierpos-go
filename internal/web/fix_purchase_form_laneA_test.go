@@ -335,11 +335,19 @@ func TestPurchaseForm_CenteredFieldTextRule(t *testing.T) {
 	}
 }
 
-// TestPurchaseForm_WideProductFieldFits50CharName — F-B1 regression:
+// TestPurchaseForm_WideProductFieldFits50CharName — F-B1 regression, extended
+// for R-F1 (fix round 2):
 // a 50-char Arabic product name needs a 384px-wide field (measured live:
-// scrollWidth 384 at the old 321px input), so the product inputs are
-// min-width:26em (416px @ 16px font, 32px of margin), size 40, inside a
-// 1120px form, and main is wide enough (1160px) to hold that form.
+// scrollWidth 384 at the old 321px input); a 60-char name needs 450px
+// (measured live: scrollWidth 450 at the 406px F-B1 field). So the product
+// inputs are min-width:31em (496px @ 16px font), size 40, inside a 1210px
+// form, and main is wide enough (1250px) to hold that form. Live-measured
+// (1280/1600, all 5 rows): the field allocates 470px — the 50-char name fits
+// 470/470 and the 60-char name fits 470/470 with 20px headroom. An 80-char
+// name needs 589px and still clips (470 vs 589) — accepted residual, NOT
+// asserted here (see lane A REPORT.md). At viewports <=1200px a media query
+// drops the product min-width back to 26em so the other columns are not
+// squeezed (1024px geometry is pixel-identical to the F-B1 tree).
 // Deterministic template/CSS assertions only — no pixel measurements.
 func TestPurchaseForm_WideProductFieldFits50CharName(t *testing.T) {
 	e, admin, _, _ := fix25BEnv(t)
@@ -349,15 +357,15 @@ func TestPurchaseForm_WideProductFieldFits50CharName(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("GET /purchases/new: status = %d, want 200", code)
 	}
-	if n := strings.Count(body, `size="40" style="min-width:26em"`); n != 5 {
-		t.Fatalf("wide product inputs (size 40, min-width 26em) = %d, want 5", n)
+	if n := strings.Count(body, `size="40" style="min-width:31em"`); n != 5 {
+		t.Fatalf("wide product inputs (size 40, min-width 31em) = %d, want 5", n)
 	}
-	if n := strings.Count(body, `max-width:1120px`); n != 1 {
-		t.Fatalf("form max-width:1120px occurrences = %d, want 1", n)
+	if n := strings.Count(body, `max-width:1210px`); n != 1 {
+		t.Fatalf("form max-width:1210px occurrences = %d, want 1", n)
 	}
-	for _, old := range []string{`size="32"`, `min-width:20em`, `max-width:1020px`} {
+	for _, old := range []string{`size="32"`, `min-width:20em`, `max-width:1020px`, `min-width:26em`, `max-width:1120px`} {
 		if strings.Contains(body, old) {
-			t.Fatalf("form still contains the old narrow value %q (F-B1)", old)
+			t.Fatalf("form still contains the old narrow value %q (F-B1/R-F1)", old)
 		}
 	}
 
@@ -365,10 +373,59 @@ func TestPurchaseForm_WideProductFieldFits50CharName(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("GET /static/style.css: status = %d, want 200", code)
 	}
-	if !strings.Contains(css, `main{max-width:1160px`) {
-		t.Fatalf("style.css lacks main{max-width:1160px — the 1120px form would not fit in the old 1100px main (F-B1)")
+	if !strings.Contains(css, `main{max-width:1250px`) {
+		t.Fatalf("style.css lacks main{max-width:1250px — the 1210px form would not fit in the old 1160px main (R-F1)")
+	}
+	if strings.Contains(css, `main{max-width:1160px`) {
+		t.Fatalf("style.css still contains the old main{max-width:1160px (R-F1)")
 	}
 	if strings.Contains(css, `main{max-width:1100px`) {
 		t.Fatalf("style.css still contains the old main{max-width:1100px (F-B1)")
+	}
+	// Narrow-viewport guard: at <=1200px the product min-width drops back to
+	// 26em so qty/price/batch are not squeezed (R-F1 1024px guard).
+	if !strings.Contains(css, `@media (max-width:1200px){input[name="product"]{min-width:26em !important}}`) {
+		t.Fatalf("style.css lacks the <=1200px product min-width guard (R-F1)")
+	}
+}
+
+// TestPurchaseForm_WideBatchFieldFits13CharCode — R-F2 regression:
+// an 11-char batch code (CH-2026-001) needs a 96px-wide field and a
+// 13-char code (LOT-2026-0115) needs 112px (measured live: scrollWidth
+// 96 / 112 at the old 84px input, size 8), so the batch inputs are
+// min-width:7.7em with tightened side padding (input 12px 4px, cell
+// 8px 4px): the 13-char code fits at 117px clientWidth while the other
+// columns keep their baseline widths (product 406, qty 68, price 80,
+// expiry 249) and the table stays within the 1210px form with no overflow. A plain
+// min-width bump alone squeezes qty/price (measured: 54/64), which is
+// why the padding is part of the fix. E-F1: the 7.7em floor also squeezes
+// the 1024px table (price 46->37px, "12.50" clips), so at <=1200px a media
+// query drops the batch min-width back to 0 (F-B1 geometry restored).
+// Deterministic template/CSS assertions only — no pixel measurements.
+func TestPurchaseForm_WideBatchFieldFits13CharCode(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	e.createProduct(admin, "PF-K1", "سكر", "15.00", "100")
+
+	code, body := e.get(admin, "/purchases/new")
+	if code != http.StatusOK {
+		t.Fatalf("GET /purchases/new: status = %d, want 200", code)
+	}
+	if n := strings.Count(body, `<td style="padding:8px 4px"><input name="batch" size="8" style="min-width:7.7em;padding:12px 4px">`); n != 5 {
+		t.Fatalf("wide batch inputs (min-width 7.7em, tight padding) = %d, want 5", n)
+	}
+	if strings.Contains(body, `<input name="batch" size="8">`) {
+		t.Fatalf("form still contains the old narrow batch input (R-F2)")
+	}
+
+	// Narrow-viewport guard (E-F1, fix round 2): at <=1200px the batch
+	// min-width drops back to 0 so the 1024px table is not squeezed
+	// (price 46px, "12.50" fits); the 13-char batch code clips again
+	// below 1200px — the accepted trade, as it did before R-F2.
+	code, css := e.get(admin, "/static/style.css")
+	if code != http.StatusOK {
+		t.Fatalf("GET /static/style.css: status = %d, want 200", code)
+	}
+	if !strings.Contains(css, `@media (max-width:1200px){input[name="batch"]{min-width:0 !important;max-width:3.9em !important}}`) {
+		t.Fatalf("style.css lacks the <=1200px batch min-width guard (E-F1)")
 	}
 }
