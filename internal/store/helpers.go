@@ -61,24 +61,52 @@ func DrawerExpectedBalance(tx *sql.Tx, shiftID int64) (money.Cents, error) {
 	if err != nil {
 		return 0, err
 	}
+	// R22-E-F2: the 'open' row is NOT summed together with the 'in'
+	// rows. It duplicates the opening balance (counted exactly once
+	// via OpeningBalance below); adding it to the day's cash sales
+	// inside SQLite overflowed the int64 SUM on a near-MaxInt64
+	// opening, so the drawer gate refused every cash operation on
+	// the shift with a raw SQLite error. Summing 'in' rows only is
+	// exactly equivalent — the old code subtracted the 'open' sum
+	// back out — and cannot overflow from the opening alone.
 	var inSum, outSum sql.NullInt64
 	err = tx.QueryRow(`SELECT
-		COALESCE(SUM(CASE WHEN MovementType IN ('open','in') THEN Amount ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN MovementType='in' THEN Amount ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN MovementType='out' THEN Amount ELSE 0 END),0)
 		FROM CashBox WHERE ShiftID=?`, shiftID).Scan(&inSum, &outSum)
 	if err != nil {
+		return 0, drawerOverflowErr(err)
+	}
+	var expenses sql.NullInt64
+	if err := tx.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Expenses WHERE ShiftID=?`, shiftID).Scan(&expenses); err != nil {
+		return 0, drawerOverflowErr(err)
+	}
+	// R22-E-F2: checked addition — a stored (legacy) absurd opening
+	// must refuse with the Arabic overflow message, never wrap.
+	expected, err := money.AddChecked(money.Cents(opening), money.Cents(inSum.Int64))
+	if err != nil {
 		return 0, err
 	}
-	// 'open' movement equals the opening balance and is counted once via
-	// OpeningBalance; exclude it from the in-sum to avoid double counting.
-	var openAmt sql.NullInt64
-	_ = tx.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM CashBox
-		WHERE ShiftID=? AND MovementType='open'`, shiftID).Scan(&openAmt)
-	var expenses sql.NullInt64
-	_ = tx.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Expenses WHERE ShiftID=?`, shiftID).Scan(&expenses)
-	expected := money.Cents(opening) + money.Cents(inSum.Int64-openAmt.Int64) - money.Cents(outSum.Int64) - money.Cents(expenses.Int64)
+	if expected, err = money.SubChecked(expected, money.Cents(outSum.Int64)); err != nil {
+		return 0, err
+	}
+	if expected, err = money.SubChecked(expected, money.Cents(expenses.Int64)); err != nil {
+		return 0, err
+	}
 	return expected, nil
 }
+
+// drawerOverflowErr maps a SQLite integer-overflow error from a drawer
+// SUM to the Arabic overflow refusal (R22-E-F2, observation O1: never
+// leak the raw SQLite error string to the caller); any other error
+// passes through unchanged.
+func drawerOverflowErr(err error) error {
+	if err != nil && strings.Contains(err.Error(), "integer overflow") {
+		return money.ErrOverflow
+	}
+	return err
+}
+
 
 // RequireDrawerBalance refuses a discretionary cash-out that would take the
 // drawer below zero. Exact-balance withdrawal is allowed.
@@ -166,12 +194,15 @@ func NextPurchaseNumber(tx *sql.Tx) (string, error) {
 
 // LiveCustomerBalance returns the live sum of open remainings
 // (non-canceled invoices with RemainingAmount > 0), never the stored column.
+// FIX-24 R24-E-N1: the SUM scan goes through sumScanErr, so an overflow
+// on absurd stored rows refuses with money.ErrOverflow (Arabic) instead
+// of leaking the raw SQLite string to the caller.
 func LiveCustomerBalance(tx *sql.Tx, customerID int64) (money.Cents, error) {
 	var bal sql.NullInt64
 	err := tx.QueryRow(`SELECT COALESCE(SUM(RemainingAmount),0) FROM Invoices
 		WHERE CustomerID=? AND IsCanceled=0 AND RemainingAmount>0`, customerID).Scan(&bal)
 	if err != nil {
-		return 0, err
+		return 0, sumScanErr(err)
 	}
 	return money.Cents(bal.Int64), nil
 }
@@ -182,7 +213,7 @@ func (s *Store) LiveCustomerBalanceDB(customerID int64) (money.Cents, error) {
 	err := s.DB.QueryRow(`SELECT COALESCE(SUM(RemainingAmount),0) FROM Invoices
 		WHERE CustomerID=? AND IsCanceled=0 AND RemainingAmount>0`, customerID).Scan(&bal)
 	if err != nil {
-		return 0, err
+		return 0, sumScanErr(err)
 	}
 	return money.Cents(bal.Int64), nil
 }

@@ -314,8 +314,14 @@ func (s *Store) SetStocktakeCounted(ctx context.Context, user *auth.User, stockt
 		if st.Status != "open" {
 			return errors.New("جلسة الجرد مغلقة ولا يمكن العد فيها")
 		}
-		if _, err := loadProductTx(tx, productID); err != nil {
+		// FIX-17 SW2-L03: refuse an inactive product like scan does
+		// (scan resolves via GetProductByBarcode, WHERE IsActive=1).
+		p, err := loadProductTx(tx, productID)
+		if err != nil {
 			return err
+		}
+		if !p.IsActive {
+			return errors.New("المنتج غير مفعّل")
 		}
 		var err2 error
 		line, err2 = upsertStocktakeLineTx(tx, stocktakeID, productID, qty)
@@ -389,6 +395,9 @@ func (s *Store) CancelStocktake(ctx context.Context, user *auth.User, stocktakeI
 // (Admin/Manager only, ST-04/ST-08). Each line applies its
 // snapshot-relative delta onto live stock; a line with zero difference
 // writes nothing. Already-approved sessions are a true no-op.
+// Approval is refused as a whole — naming the product, nothing applied —
+// when a counted line's product is inactive at approval time (FIX-17
+// SW2-L03) or its delta would drive stock negative.
 func (s *Store) ApproveStocktake(ctx context.Context, user *auth.User, stocktakeID int64, reason string) (*Stocktake, error) {
 	if err := rbac.Require(user.Role, rbac.PermApproveStocktake); err != nil {
 		return nil, err
@@ -414,7 +423,10 @@ func (s *Store) ApproveStocktake(ctx context.Context, user *auth.User, stocktake
 	if st0.ApprovedAt != "" {
 		return st0, nil
 	}
-	// Pre-check: no delta may drive a product negative.
+	// Pre-check: no delta may drive a product negative, and no delta may
+	// apply to a product deactivated after the count (FIX-17 SW2-L03).
+	// Zero-delta lines apply nothing, so they are skipped here exactly
+	// like in the negative check below.
 	for _, ln := range st0.Lines {
 		delta := ln.Difference
 		if delta == 0 {
@@ -423,6 +435,9 @@ func (s *Store) ApproveStocktake(ctx context.Context, user *auth.User, stocktake
 		p, err := s.GetProduct(ctx, user, ln.ProductID)
 		if err != nil {
 			return nil, err
+		}
+		if !p.IsActive {
+			return nil, fmt.Errorf("لا يمكن اعتماد الجرد: المنتج %s غير مفعّل", p.Name)
 		}
 		if p.Quantity+delta < 0 {
 			return nil, fmt.Errorf("لا يمكن اعتماد الجرد: فرق الجرد للمنتج %s يجعل الكمية سالبة", p.Name)
@@ -449,6 +464,12 @@ func (s *Store) ApproveStocktake(ctx context.Context, user *auth.User, stocktake
 			p, err := loadProductTx(tx, ln.ProductID)
 			if err != nil {
 				return err
+			}
+			// FIX-17 SW2-L03: in-tx guard against a product deactivated
+			// between the pre-check and this tx; the whole approval is
+			// refused, nothing is applied (same as the negative check).
+			if !p.IsActive {
+				return fmt.Errorf("لا يمكن اعتماد الجرد: المنتج %s غير مفعّل", p.Name)
 			}
 			newQty := p.Quantity + delta
 			if newQty < 0 {

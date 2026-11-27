@@ -18,7 +18,7 @@ func TestCourierDebtRoles(t *testing.T) {
 	cashier := testUser(t, s, "cash1", "cashier")
 	sup := testUser(t, s, "sup1", "supervisor")
 
-	// Cashier is READ-ONLY: create refused.
+	// Cashier is READ-ONLY for create: refused.
 	mustErr(t, func() error {
 		_, err := s.CreateCourierDebt(ctx, cashier, CourierDebtInput{CourierName: "مندوب", Amount: money.Cents(1000)})
 		return err
@@ -36,13 +36,18 @@ func TestCourierDebtRoles(t *testing.T) {
 	if len(list) != 1 || list[0].CourierName != "مندوب أحمد" || list[0].InvoiceNumber.Int64 != 42 {
 		t.Fatalf("list wrong: %+v", list)
 	}
-	// Cashier may NOT update / delete / settle.
+	// Cashier may NOT update / delete — but MAY settle (FIX-12 SW-H03:
+	// jony's 2026-11-19 redesign — ANY cashier receiving cash clears
+	// the debt, recorded as a COLLECTION on the receiver).
 	mustErr(t, s.UpdateCourierDebt(ctx, cashier, id, CourierDebtInput{CourierName: "x", Amount: money.Cents(100)}), "cashier update courier debt")
 	mustErr(t, s.DeleteCourierDebt(ctx, cashier, id), "cashier delete courier debt")
-	mustErr(t, func() error {
-		_, err := s.SettleCourierDebt(ctx, cashier, id, money.Cents(100), "Visa", "")
-		return err
-	}(), "cashier settle courier debt")
+	rem, err := s.SettleCourierDebt(ctx, cashier, id, money.Cents(100), "Visa", "")
+	if err != nil {
+		t.Fatalf("cashier settle courier debt: %v", err)
+	}
+	if rem != money.Cents(4900) {
+		t.Fatalf("remaining after cashier settle = %v, want 49.00 EGP", rem)
+	}
 	// Supervisor MAY act (edit_courier_debts).
 	if err := s.UpdateCourierDebt(ctx, sup, id, CourierDebtInput{CourierName: "مندوب أحمد", Amount: money.Cents(6000), OrderRef: "ORD-1"}); err != nil {
 		t.Fatalf("supervisor update: %v", err)

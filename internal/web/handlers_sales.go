@@ -24,9 +24,17 @@ import (
 // registerSalesRoutes registers every B1 route on m.
 func (s *Server) registerSalesRoutes(m *http.ServeMux) {
 	// --- Sales (HTML) ---
-	m.HandleFunc("/sales", s.RequirePerm(rbac.PermCreateInvoice, s.handleSalesIndex))
+	// FIX-17 SW2-L10 (§15 row 25): /sales is login-open so warehouse can
+	// read the invoice list; handleSalesIndex gates the POST and renders
+	// a read-only list for warehouse (no POS form).
+	m.HandleFunc("/sales", s.RequireLogin(s.handleSalesIndex))
 	m.HandleFunc("/sales/{id}", s.RequireLogin(s.handleSaleDetail))
-	m.HandleFunc("/sales/{id}/print", s.RequirePerm(rbac.PermCreateInvoice, s.handleSalePrint))
+	// FIX-17 SW2-L10 follow-on: print uses RequireLogin, not
+	// PermCreateInvoice — handleSalePrint enforces the same GetInvoice
+	// visibility as the detail page (warehouse any invoice, cashier
+	// own-only), and sale_print.html carries no profit/buy-price
+	// fields, so a warehouse user who may view an invoice may print it.
+	m.HandleFunc("/sales/{id}/print", s.RequireLogin(s.handleSalePrint))
 	// --- Products (HTML) ---
 	m.HandleFunc("/products", s.RequirePerm(rbac.PermViewProducts, s.handleProductsList))
 	m.HandleFunc("/products/new", s.RequirePerm(rbac.PermManageProducts, s.handleProductForm))
@@ -104,28 +112,60 @@ func (s *Server) renderErr(w http.ResponseWriter, r *http.Request, title string,
 	s.renderErrStatus(w, r, title, err, http.StatusOK)
 }
 
+// safeHTMLErr returns the text safe to render into an HTML error page
+// (FIX-26 R26-A-F1): a raw driver/library error becomes one generic
+// Arabic message, while a safe Arabic business/validation error is kept
+// verbatim. The HTTP status is unchanged; only the content is gated.
+func safeHTMLErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	if isDriverErr(err) {
+		return "حدث خطأ داخلي، حاول مرة أخرى"
+	}
+	return err.Error()
+}
+
 // renderErrStatus renders the error page with an explicit HTTP status,
 // so a refusal is a 400 to the client instead of a 200 page that only
 // reads like an error (FIX-6 R6-L4).
 func (s *Server) renderErrStatus(w http.ResponseWriter, r *http.Request, title string, err error, status int) {
 	LogErr(r, err)
-	_ = s.renderStatus(w, r, "error.html", Page{Title: title, Error: err.Error()}, status)
+	_ = s.renderStatus(w, r, "error.html", Page{Title: title, Error: safeHTMLErr(err)}, status)
 }
 
 func apiErr(w http.ResponseWriter, status int, err error) {
 	WriteJSON(w, status, map[string]any{"ok": false, "error": err.Error()})
 }
 
-func productJSON(p *store.Product) map[string]any {
-	return map[string]any{
+// FIX-24 R24-E-N2: a 500 must never echo a raw driver/DB (or other
+// library) error to the client ("SQL logic error: no such table:
+// Expenses (1)"). Log the real error server-side and answer with one
+// generic Arabic message, keeping the 500 status. All JSON-API 500
+// branches must go through this helper, never apiErr(w, 500, err).
+func apiErrInternal(w http.ResponseWriter, r *http.Request, err error) {
+	LogErr(r, err)
+	apiErr(w, http.StatusInternalServerError, errString("حدث خطأ داخلي، حاول مرة أخرى"))
+}
+
+// productJSON renders a product for the API. The buy price (cost
+// basis) is omitted for roles without view_profit (FIX-12 SW-H09):
+// cashier and warehouse must not see it, while admin/manager/
+// supervisor keep it.
+func productJSON(p *store.Product, u *auth.User) map[string]any {
+	m := map[string]any{
 		"id": p.ID, "barcode": p.Barcode, "name": p.Name, "category": p.Category,
-		"buy_price": int64(p.BuyPrice), "retail_price": int64(p.RetailPrice),
+		"retail_price": int64(p.RetailPrice),
 		"wholesale_price": int64(p.WholesalePrice), "bulk_price": int64(p.BulkPrice),
 		"quantity": int64(p.Quantity), "min_quantity": int64(p.MinQuantity),
 		"unit": p.Unit, "expiry_date": p.ExpiryDate, "is_weighted": p.IsWeighted,
 		"scale_plu": p.ScalePLU, "price_per_kg": int64(p.PricePerKg),
 		"is_active": p.IsActive,
 	}
+	if u != nil && rbac.Can(u.Role, rbac.PermViewProfit) {
+		m["buy_price"] = int64(p.BuyPrice)
+	}
+	return m
 }
 
 // customersForPicker lists active customers for the sale screen picker.
@@ -156,10 +196,40 @@ func (s *Server) handleSalesIndex(w http.ResponseWriter, r *http.Request) {
 	u := CurrentUser(r)
 	ctx := r.Context()
 	if r.Method == http.MethodPost {
+		// FIX-17 SW2-L10: posting a sale still needs create_invoice
+		// (the service layer re-checks it); only the GET list is open
+		// to warehouse.
+		if err := rbac.Require(u.Role, rbac.PermCreateInvoice); err != nil {
+			s.deny(w, r, err.Error())
+			return
+		}
 		s.handleSalePost(w, r, u)
 		return
 	}
-	invoices, _ := s.Store.ListInvoices(ctx, u, store.Today(), store.Today(), 0)
+	// FIX-19 R19-D-F1: a cashier sees only their own invoices in the
+	// list — ListInvoices(userID=0) used to leak every cashier's
+	// invoices with amounts, contradicting GetInvoice's cashier
+	// own-only gate (FIX-3 M4). Admin/manager (effective admin) /
+	// supervisor / warehouse keep 0 (all invoices); warehouse stays
+	// view-any read-only (§15 row 25).
+	listUserID := int64(0)
+	if u.Role == rbac.RoleCashier {
+		listUserID = u.ID
+	}
+	invoices, _ := s.Store.ListInvoices(ctx, u, store.Today(), store.Today(), listUserID)
+	// FIX-17 SW2-L10 (§15 row 25): warehouse views invoices read-only —
+	// today's list without the POS form. Any other role without
+	// create_invoice has no invoice view here and is denied.
+	if u.Role == rbac.RoleWarehouse {
+		_ = s.render(w, r, "invoices.html", Page{Title: "الفواتير", ActiveNav: "sales", Data: map[string]any{
+			"invoices": invoices, "today": store.Today(),
+		}})
+		return
+	}
+	if err := rbac.Require(u.Role, rbac.PermCreateInvoice); err != nil {
+		s.deny(w, r, err.Error())
+		return
+	}
 	products, _ := s.Store.ListProducts(ctx, u, false)
 	_ = s.render(w, r, "sales.html", Page{Title: "المبيعات", ActiveNav: "sales", Data: map[string]any{
 		"invoices": invoices, "products": products, "customers": s.customersForPicker(),
@@ -240,7 +310,7 @@ func (s *Server) handleSalePost(w http.ResponseWriter, r *http.Request, u *auth.
 		Notes:          r.FormValue("notes"),
 	})
 	if err != nil {
-		_ = s.render(w, r, "sales.html", Page{Title: "المبيعات", ActiveNav: "sales", Error: err.Error(), Data: map[string]any{
+		_ = s.render(w, r, "sales.html", Page{Title: "المبيعات", ActiveNav: "sales", Error: safeHTMLErr(err), Data: map[string]any{
 			"customers":     s.customersForPicker(),
 			"canDiscount":   rbac.Can(u.Role, rbac.PermGiveDiscount),
 			"canEditPrice":  rbac.Can(u.Role, rbac.PermEditPrice),
@@ -338,6 +408,9 @@ func (s *Server) handleProductsList(w http.ResponseWriter, r *http.Request) {
 		"canManage":   rbac.Can(u.Role, rbac.PermManageProducts),
 		"canAddStock": rbac.Can(u.Role, rbac.PermAddStock),
 		"canAdjust":   rbac.Can(u.Role, rbac.PermAdjustStock),
+		// FIX-12 SW-H09: the buy-price column renders only for roles
+		// that may view profit (admin/manager/supervisor).
+		"canViewProfit": rbac.Can(u.Role, rbac.PermViewProfit),
 	}})
 }
 
@@ -433,7 +506,7 @@ func (s *Server) handleProductForm(w http.ResponseWriter, r *http.Request) {
 		}
 		in, err := productInputFromForm(r, cur)
 		if err != nil {
-			_ = s.render(w, r, "product_form.html", Page{Title: "المنتج", Error: err.Error(), Data: map[string]any{"product": cur, "isNew": isNew}})
+			_ = s.render(w, r, "product_form.html", Page{Title: "المنتج", Error: safeHTMLErr(err), Data: map[string]any{"product": cur, "isNew": isNew}})
 			return
 		}
 		var err2 error
@@ -444,7 +517,7 @@ func (s *Server) handleProductForm(w http.ResponseWriter, r *http.Request) {
 			saved, err2 = s.Store.UpdateProduct(ctx, u, cur.ID, in)
 		}
 		if err2 != nil {
-			_ = s.render(w, r, "product_form.html", Page{Title: "المنتج", Error: err2.Error(), Data: map[string]any{"product": cur, "isNew": isNew}})
+			_ = s.render(w, r, "product_form.html", Page{Title: "المنتج", Error: safeHTMLErr(err2), Data: map[string]any{"product": cur, "isNew": isNew}})
 			return
 		}
 		http.Redirect(w, r, fmt.Sprintf("/products/%d", saved.ID), http.StatusSeeOther)
@@ -484,6 +557,9 @@ func (s *Server) handleProductDetail(w http.ResponseWriter, r *http.Request) {
 		"canAddStock": rbac.Can(u.Role, rbac.PermAddStock),
 		"canAdjust":   rbac.Can(u.Role, rbac.PermAdjustStock),
 		"lowStock":    p.Quantity <= p.MinQuantity,
+		// FIX-12 SW-H09: buy price (header + movement rows) renders
+		// only for roles that may view profit.
+		"canViewProfit": rbac.Can(u.Role, rbac.PermViewProfit),
 	}})
 }
 
@@ -504,7 +580,18 @@ func (s *Server) handleProductAddStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.Store.AddStock(r.Context(), u, id, qty); err != nil {
-		_ = s.render(w, r, "error.html", Page{Title: "إضافة مخزون", Error: err.Error()})
+		// FIX-22 R22-B-F1: a refused add (e.g. overflow) is a 400, not
+		// a 200 error page (FIX-6 R6-L4 pattern via renderErrStatus).
+		// FIX-25 Observation E: a raw driver error (dropped Products
+		// table) must not render into the HTML error page — answer
+		// the generic message instead, keeping the 400 status; safe
+		// Arabic business errors (overflow, missing product) keep
+		// their text.
+		if isDriverErr(err) {
+			s.renderErrStatus(w, r, "إضافة مخزون", errString("تعذّر إضافة المخزون"), http.StatusBadRequest)
+			return
+		}
+		s.renderErrStatus(w, r, "إضافة مخزون", err, http.StatusBadRequest)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/products/%d", id), http.StatusSeeOther)
@@ -527,7 +614,7 @@ func (s *Server) handleProductAdjustStock(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if _, err := s.Store.AdjustStock(r.Context(), u, id, qty, r.FormValue("reason")); err != nil {
-		_ = s.render(w, r, "error.html", Page{Title: "تعديل مخزون", Error: err.Error()})
+		_ = s.render(w, r, "error.html", Page{Title: "تعديل مخزون", Error: safeHTMLErr(err)})
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/products/%d", id), http.StatusSeeOther)
@@ -694,7 +781,7 @@ func (s *Server) handlePromoForm(w http.ResponseWriter, r *http.Request) {
 		}
 		in, err := offerInputFromForm(r, cur)
 		if err != nil {
-			_ = s.render(w, r, "promo_form.html", Page{Title: "العرض", Error: err.Error(), Data: map[string]any{"offer": cur, "isNew": isNew}})
+			_ = s.render(w, r, "promo_form.html", Page{Title: "العرض", Error: safeHTMLErr(err), Data: map[string]any{"offer": cur, "isNew": isNew}})
 			return
 		}
 		var err2 error
@@ -704,7 +791,7 @@ func (s *Server) handlePromoForm(w http.ResponseWriter, r *http.Request) {
 			_, err2 = s.Store.UpdateOffer(ctx, u, cur.ID, in)
 		}
 		if err2 != nil {
-			_ = s.render(w, r, "promo_form.html", Page{Title: "العرض", Error: err2.Error(), Data: map[string]any{"offer": cur, "isNew": isNew}})
+			_ = s.render(w, r, "promo_form.html", Page{Title: "العرض", Error: safeHTMLErr(err2), Data: map[string]any{"offer": cur, "isNew": isNew}})
 			return
 		}
 		http.Redirect(w, r, "/promotions", http.StatusSeeOther)
@@ -763,7 +850,7 @@ func (s *Server) handlePromoDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Store.DeleteOffer(r.Context(), u, id); err != nil {
-		_ = s.render(w, r, "promos.html", Page{Title: "العروض والترويج", Error: err.Error(), Data: map[string]any{
+		_ = s.render(w, r, "promos.html", Page{Title: "العروض والترويج", Error: safeHTMLErr(err), Data: map[string]any{
 			"offers": []any{}, "canManage": true,
 		}})
 		return
@@ -843,7 +930,7 @@ func (s *Server) handleStocktakeScan(w http.ResponseWriter, r *http.Request) {
 		qty = &q
 	}
 	if _, err := s.Store.ScanStocktakeLine(r.Context(), u, id, r.FormValue("barcode"), qty); err != nil {
-		_ = s.render(w, r, "error.html", Page{Title: "الجرد", Error: err.Error()})
+		_ = s.render(w, r, "error.html", Page{Title: "الجرد", Error: safeHTMLErr(err)})
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/stocktake/%d", id), http.StatusSeeOther)
@@ -871,7 +958,7 @@ func (s *Server) handleStocktakeSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.Store.SetStocktakeCounted(r.Context(), u, id, pid, qty); err != nil {
-		_ = s.render(w, r, "error.html", Page{Title: "الجرد", Error: err.Error()})
+		_ = s.render(w, r, "error.html", Page{Title: "الجرد", Error: safeHTMLErr(err)})
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/stocktake/%d", id), http.StatusSeeOther)
@@ -967,7 +1054,13 @@ func (s *Server) parseSaleRequest(r *http.Request) (store.CreateInvoiceInput, er
 	return in, nil
 }
 
-func saleResultJSON(res *store.InvoiceResult) map[string]any {
+// FIX-15 L2: profit and free_cost are omitted for roles without
+// view_profit — the profit leaks the unit buy price (net - profit =
+// cost), and free_cost is the buy cost of the free units. Same
+// omit-the-key pattern as the GET /api/sales/{id} buy_price strip
+// below (:1283-1292); omitted, not zeroed, so the field is not even
+// advertised to roles that may not see it.
+func saleResultJSON(res *store.InvoiceResult, canViewProfit bool) map[string]any {
 	offers := make([]map[string]any, 0, len(res.AppliedOffers))
 	for _, o := range res.AppliedOffers {
 		offers = append(offers, map[string]any{"offer_id": o.OfferID, "name": o.Name, "saved": int64(o.Saved)})
@@ -976,15 +1069,19 @@ func saleResultJSON(res *store.InvoiceResult) map[string]any {
 	for pid, q := range res.FreeUnits {
 		free[strconv.FormatInt(pid, 10)] = int64(q)
 	}
-	return map[string]any{
+	m := map[string]any{
 		"ok": true, "invoice_id": res.InvoiceID, "invoice_number": res.InvoiceNumber,
 		"gross": int64(res.Gross), "discount": int64(res.Discount),
 		"promo_discount": int64(res.PromoDiscount), "net": int64(res.Net),
 		"paid": int64(res.Paid), "remaining": int64(res.Remaining),
-		"profit": int64(res.Profit), "free_cost": int64(res.FreeCost),
 		"warnings": res.Warnings, "shift_id": res.ShiftID,
 		"applied_offers": offers, "promo_saved": int64(res.PromoSaved), "free_units": free,
 	}
+	if canViewProfit {
+		m["profit"] = int64(res.Profit)
+		m["free_cost"] = int64(res.FreeCost)
+	}
+	return m
 }
 
 func (s *Server) handleAPISaleCreate(w http.ResponseWriter, r *http.Request) {
@@ -999,10 +1096,17 @@ func (s *Server) handleAPISaleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.Store.CreateInvoice(r.Context(), CurrentUser(r), in)
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		// FIX-12 SW-L08: a service-layer permission denial (discount /
+		// price-edit / below-cost / credit-override gates) answers 403
+		// with the uniform denial text, not 400.
+		apiErrForService(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, saleResultJSON(res))
+	// FIX-15 L2: profit/free_cost ride on view_profit — the creating
+	// cashier must not get the profit back in the create response.
+	u := CurrentUser(r)
+	canViewProfit := u != nil && rbac.Can(u.Role, rbac.PermViewProfit)
+	WriteJSON(w, http.StatusOK, saleResultJSON(res, canViewProfit))
 }
 
 // handleAPISalePreview evaluates promos for a cart without posting.
@@ -1057,7 +1161,7 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range in.Lines {
 		p, err := s.Store.GetProduct(r.Context(), u, raw.ProductID)
 		if err != nil {
-			apiErr(w, http.StatusBadRequest, err)
+			apiErrForService(w, r, err)
 			return
 		}
 		stockByProduct[raw.ProductID] = p.Quantity
@@ -1078,6 +1182,12 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if unit < p.BuyPrice && !in.AllowBelowCost {
+			// FIX-17 SW2-L11: a role that can never confirm gets the
+			// denial, not a dead-end prompt.
+			if err := rbac.Require(u.Role, rbac.PermApproveBelowCost); err != nil {
+				apiErr(w, http.StatusForbidden, err)
+				return
+			}
 			apiErr(w, http.StatusBadRequest, fmt.Errorf("السعر أقل من سعر الشراء — هل تريد البيع بخسارة؟"))
 			return
 		}
@@ -1101,7 +1211,11 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		lineGross := money.MulQty(unit, raw.Qty)
+		lineGross, lerr := money.MulQty(unit, raw.Qty)
+		if lerr != nil {
+			apiErr(w, http.StatusBadRequest, lerr)
+			return
+		}
 		disc := raw.ItemDiscount
 		if disc > lineGross {
 			disc = lineGross
@@ -1111,10 +1225,19 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 			LineTotal: lineGross - disc, BuyPrice: p.BuyPrice})
 	}
 	// FIX-3 duplicate rule: one line per product in the preview too.
-	lines = store.MergePromoLines(lines)
+	lines, merr := store.MergePromoLines(lines)
+	if merr != nil {
+		apiErr(w, http.StatusBadRequest, merr)
+		return
+	}
 	var gross money.Cents
 	for _, ln := range lines {
-		gross += ln.LineTotal
+		var gerr error
+		gross, gerr = money.AddChecked(gross, ln.LineTotal)
+		if gerr != nil {
+			apiErr(w, http.StatusBadRequest, gerr)
+			return
+		}
 		// Total stock check on the MERGED quantity (a split addition
 		// could pass the per-line check while exceeding stock in total).
 		if ln.Qty > stockByProduct[ln.ProductID] {
@@ -1124,7 +1247,7 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	promo, err := s.Store.EvaluateOffers(r.Context(), lines)
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForService(w, r, err)
 		return
 	}
 	invPromo := promo.InvoiceBest
@@ -1154,14 +1277,34 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 		} else if effInvDiscount > cap {
 			effInvDiscount = cap
 		}
-		invPromoShares := store.AllocProRata(invPromo, bases)
-		invDiscShares := store.AllocProRata(effInvDiscount, bases)
+		invPromoShares, aerr := store.AllocProRata(invPromo, bases)
+		if aerr != nil {
+			apiErr(w, http.StatusBadRequest, aerr)
+			return
+		}
+		invDiscShares, aerr := store.AllocProRata(effInvDiscount, bases)
+		if aerr != nil {
+			apiErr(w, http.StatusBadRequest, aerr)
+			return
+		}
 		for i, ln := range lines {
 			netLine := bases[i] - invPromoShares[i] - invDiscShares[i]
 			if netLine < 0 {
 				netLine = 0
 			}
-			if netLine < money.MulQty(ln.BuyPrice, ln.Qty) && !in.AllowBelowCost {
+			cost, cerr := money.MulQty(ln.BuyPrice, ln.Qty)
+			if cerr != nil {
+				apiErr(w, http.StatusBadRequest, cerr)
+				return
+			}
+			if netLine < cost && !in.AllowBelowCost {
+				// FIX-17 SW2-L11: same upfront denial as the unit-price
+				// path — a role that can never confirm never sees the
+				// prompt.
+				if err := rbac.Require(u.Role, rbac.PermApproveBelowCost); err != nil {
+					apiErr(w, http.StatusForbidden, err)
+					return
+				}
 				apiErr(w, http.StatusBadRequest, fmt.Errorf("السعر أقل من سعر الشراء — هل تريد البيع بخسارة؟"))
 				return
 			}
@@ -1179,6 +1322,14 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 			customerID = 1
 		}
 		paid := in.Paid
+		// FIX-12 SW-H05: same rule as CreateInvoice — a supplied cash
+		// amount that is negative, above net, or below net (but
+		// non-zero) is refused instead of silently rewritten to net.
+		// paid == 0 keeps the S-19 auto-pay-full convention.
+		if customerID == 1 && paid != 0 && paid != net {
+			apiErr(w, http.StatusBadRequest, fmt.Errorf("المبلغ المدفوع غير صحيح"))
+			return
+		}
 		if customerID == 1 {
 			// The cash customer always pays the full net (S-19).
 			paid = net
@@ -1196,7 +1347,7 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 			// never negative, so it is a safe sentinel.
 			var creditLimit money.Cents
 			if err := s.Store.DB.QueryRow(`SELECT COALESCE((SELECT CreditLimit FROM Customers WHERE CustomerID=? AND IsActive=1),-1)`, customerID).Scan(&creditLimit); err != nil {
-				apiErr(w, http.StatusBadRequest, err)
+				apiErrForService(w, r, err)
 				return
 			}
 			if creditLimit < 0 {
@@ -1206,7 +1357,7 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 			var liveBal money.Cents
 			if err := s.Store.DB.QueryRow(`SELECT COALESCE(SUM(RemainingAmount),0) FROM Invoices
 				WHERE CustomerID=? AND IsCanceled=0 AND RemainingAmount>0`, customerID).Scan(&liveBal); err != nil {
-				apiErr(w, http.StatusBadRequest, err)
+				apiErrForService(w, r, err)
 				return
 			}
 			if creditLimit > 0 && liveBal+remaining > creditLimit && !in.AllowOverLimit {
@@ -1227,11 +1378,20 @@ func (s *Server) handleAPISalePreview(w http.ResponseWriter, r *http.Request) {
 	for pid, q := range promo.FreeUnits {
 		free[strconv.FormatInt(pid, 10)] = int64(q)
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{
+	// FIX-15 C1 (coordinator extension of R15-L2): free_cost is the buy
+	// cost of the free units — with free_units (productID -> qty) in the
+	// same response, free_cost / qty is the unit buy price. Omit it for
+	// roles without view_profit, same rule as saleResultJSON. No shipped
+	// client reads free_cost (no template/JS reference).
+	resp := map[string]any{
 		"ok": true, "gross": int64(gross), "line_promo": int64(promo.LinePromoTotal),
 		"invoice_promo": int64(invPromo), "net": int64(net),
-		"applied_offers": offers, "free_units": free, "free_cost": int64(promo.FreeCost),
-	})
+		"applied_offers": offers, "free_units": free,
+	}
+	if u != nil && rbac.Can(u.Role, rbac.PermViewProfit) {
+		resp["free_cost"] = int64(promo.FreeCost)
+	}
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAPISaleGet(w http.ResponseWriter, r *http.Request) {
@@ -1247,18 +1407,27 @@ func (s *Server) handleAPISaleGet(w http.ResponseWriter, r *http.Request) {
 			apiErr(w, http.StatusForbidden, err)
 			return
 		}
-		apiErr(w, http.StatusNotFound, err)
+		apiErrForService(w, r, err)
 		return
 	}
 	lines := make([]map[string]any, 0, len(inv.Lines))
+	// FIX-12 SW-H09: the invoice-line buy price is omitted for roles
+	// without view_profit (cashier/warehouse) — the sale-detail profit
+	// line is already gated on the same permission.
+	u := CurrentUser(r)
+	canViewProfit := u != nil && rbac.Can(u.Role, rbac.PermViewProfit)
 	for _, ln := range inv.Lines {
-		lines = append(lines, map[string]any{
+		lm := map[string]any{
 			"product_id": ln.ProductID, "product_name": ln.ProductName,
 			"quantity": int64(ln.Qty), "unit_price": int64(ln.UnitPrice),
-			"buy_price": int64(ln.BuyPrice), "item_discount": int64(ln.ItemDiscount),
+			"item_discount": int64(ln.ItemDiscount),
 			"promo_discount": int64(ln.PromoDiscount), "free_qty": int64(ln.FreeQty),
 			"total": int64(ln.TotalPrice), "is_weighted": ln.IsWeighted,
-		})
+		}
+		if canViewProfit {
+			lm["buy_price"] = int64(ln.BuyPrice)
+		}
+		lines = append(lines, lm)
 	}
 	offers := make([]map[string]any, 0, len(inv.Offers))
 	for _, o := range inv.Offers {
@@ -1296,7 +1465,7 @@ func (s *Server) handleAPISaleCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	refund, err := s.Store.CancelInvoice(r.Context(), CurrentUser(r), id, body.Reason)
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForService(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "invoice_id": id, "cash_refund": int64(refund)})
@@ -1305,12 +1474,12 @@ func (s *Server) handleAPISaleCancel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIProductSearch(w http.ResponseWriter, r *http.Request) {
 	prods, err := s.Store.SearchProducts(r.Context(), CurrentUser(r), r.URL.Query().Get("q"))
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForService(w, r, err)
 		return
 	}
 	out := make([]map[string]any, 0, len(prods))
 	for _, p := range prods {
-		out = append(out, productJSON(p))
+		out = append(out, productJSON(p, CurrentUser(r)))
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "products": out})
 }
@@ -1319,10 +1488,10 @@ func (s *Server) handleAPIProductBarcode(w http.ResponseWriter, r *http.Request)
 	code := r.PathValue("code")
 	p, dec, err := s.Store.GetProductByBarcode(r.Context(), CurrentUser(r), code)
 	if err != nil {
-		apiErr(w, http.StatusNotFound, err)
+		apiErrForService(w, r, err)
 		return
 	}
-	res := map[string]any{"ok": true, "product": productJSON(p)}
+	res := map[string]any{"ok": true, "product": productJSON(p, CurrentUser(r))}
 	if dec != nil {
 		res["scale"] = map[string]any{
 			"weight": int64(dec.Weight), "total_price": int64(dec.TotalPrice),
@@ -1340,16 +1509,16 @@ func (s *Server) handleAPIProductGet(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.Store.GetProduct(r.Context(), CurrentUser(r), id)
 	if err != nil {
-		apiErr(w, http.StatusNotFound, err)
+		apiErrForService(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "product": productJSON(p)})
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "product": productJSON(p, CurrentUser(r))})
 }
 
 func (s *Server) handleAPIOffersList(w http.ResponseWriter, r *http.Request) {
 	offers, err := s.Store.ListOffers(r.Context(), CurrentUser(r), r.URL.Query().Get("status"))
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForService(w, r, err)
 		return
 	}
 	out := make([]map[string]any, 0, len(offers))
@@ -1372,7 +1541,7 @@ func (s *Server) handleAPIStocktakeGet(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := s.Store.GetStocktake(r.Context(), CurrentUser(r), id)
 	if err != nil {
-		apiErr(w, http.StatusNotFound, err)
+		apiErrForService(w, r, err)
 		return
 	}
 	lines := make([]map[string]any, 0, len(st.Lines))

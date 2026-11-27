@@ -28,7 +28,17 @@ import "cashierpos-go/internal/money"
 // MulQty(UnitPrice, Qty) != TotalPrice + ItemDiscount. A plain promo
 // or item discount alone never triggers it — only the rounding does.
 func approxSaleLine(unit money.Cents, q money.Qty, total, itemDisc money.Cents) bool {
-	return money.MulQty(unit, q) != total+itemDisc
+	// R19-B-F2: an overflowing product cannot be trusted to match —
+	// treat it as approximate.
+	v, err := money.MulQty(unit, q)
+	if err != nil {
+		return true
+	}
+	gross, err := money.AddChecked(total, itemDisc)
+	if err != nil {
+		return true
+	}
+	return v != gross
 }
 
 // approxReturn reports whether a stored return row's unit price is a
@@ -36,7 +46,12 @@ func approxSaleLine(unit money.Cents, q money.Qty, total, itemDisc money.Cents) 
 // MulQty(UnitPrice, Qty) != TotalRefund. E.g. refund 100¢ over qty 3
 // stores unit 33¢, and 33×3=99≠100, so the column shows ≈0.33.
 func approxReturn(unit money.Cents, q money.Qty, refund money.Cents) bool {
-	return money.MulQty(unit, q) != refund
+	// R19-B-F2: an overflowing product cannot be trusted to match.
+	v, err := money.MulQty(unit, q)
+	if err != nil {
+		return true
+	}
+	return v != refund
 }
 
 // avgUnit returns the truncated per-unit average of an aggregate
@@ -49,12 +64,22 @@ func avgUnit(total money.Cents, q money.Qty) money.Cents {
 	if q <= 0 {
 		return 0
 	}
-	return money.Cents(int64(total) * 1000 / int64(q))
+	// R19-B-F2: checked; on overflow there is no meaningful average.
+	v, err := money.MulDiv(int64(total), 1000, int64(q))
+	if err != nil {
+		return 0
+	}
+	return money.Cents(v)
 }
 
 func avgApprox(total money.Cents, q money.Qty) bool {
 	if q <= 0 {
 		return false
 	}
-	return money.MulQty(avgUnit(total, q), q) != total
+	// R19-B-F2: an overflowing product cannot be trusted to match.
+	v, err := money.MulQty(avgUnit(total, q), q)
+	if err != nil {
+		return true
+	}
+	return v != total
 }

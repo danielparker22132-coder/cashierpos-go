@@ -181,11 +181,12 @@ func TestParityMarkers_ReturnsUnitPrice(t *testing.T) {
 	e.openShift(admin, 10000)
 
 	// 3 units at 34¢ with a 1¢ item discount: gross 102, TotalPrice
-	// 101. The return path allocates the invoice Discount (which
-	// carries the 1¢ item discount) once more, so effTotal is 100
-	// and returning all 3 refunds exactly 100¢; the stored unit is
-	// 100*1000/3000 = 33¢ (truncated) and 33×3 = 99 ≠ 100, so the
-	// column shows ≈0.33 next to the exact 1.00 refund.
+	// 101. FIX-17 SW2-H01: the return path used to allocate the invoice
+	// Discount (which carries the 1¢ item discount) once more, refunding
+	// only 100¢; the item discount is now subtracted exactly once, so
+	// returning all 3 refunds exactly 101¢; the stored unit is
+	// 101*1000/3000 = 33¢ (truncated) and 33×3 = 99 ≠ 101, so the
+	// column shows ≈0.33 next to the exact 1.01 refund.
 	code, data := e.sell(admin, map[string]any{
 		"customer_id": 1, "sale_type": "retail", "payment_method": "Cash", "allow_below_cost": true,
 		"lines": []any{map[string]any{"product_id": pid, "qty": "3.000", "unit_price": 34, "item_discount": 1}},
@@ -203,10 +204,10 @@ func TestParityMarkers_ReturnsUnitPrice(t *testing.T) {
 		t.Fatalf("partial return: want 303 to /returns, got %d loc=%q body=%q", code, loc, body)
 	}
 	if unit := e.queryInt(`SELECT UnitPrice FROM Returns WHERE InvoiceID=?`, int64(invID)); unit != 33 {
-		t.Fatalf("stored return unit = %d, want 33 (truncated 100/3)", unit)
+		t.Fatalf("stored return unit = %d, want 33 (truncated 101/3)", unit)
 	}
-	if refund := e.queryInt(`SELECT TotalRefund FROM Returns WHERE InvoiceID=?`, int64(invID)); refund != 100 {
-		t.Fatalf("stored return refund = %d, want 100", refund)
+	if refund := e.queryInt(`SELECT TotalRefund FROM Returns WHERE InvoiceID=?`, int64(invID)); refund != 101 {
+		t.Fatalf("stored return refund = %d, want 101", refund)
 	}
 	code, list := e.get(admin, "/returns")
 	if code != http.StatusOK {
@@ -216,10 +217,10 @@ func TestParityMarkers_ReturnsUnitPrice(t *testing.T) {
 		t.Errorf("returns list: no unit-price column header")
 	}
 	if !strings.Contains(list, "≈0.33 ج.م") {
-		t.Errorf("returns list: want ≈0.33 ج.م for the 100¢/3 truncated average")
+		t.Errorf("returns list: want ≈0.33 ج.م for the 101¢/3 truncated average")
 	}
-	if !strings.Contains(list, "1.00 ج.م") {
-		t.Errorf("returns list: exact refund 1.00 ج.م missing beside the marker")
+	if !strings.Contains(list, "1.01 ج.م") {
+		t.Errorf("returns list: exact refund 1.01 ج.م missing beside the marker")
 	}
 }
 

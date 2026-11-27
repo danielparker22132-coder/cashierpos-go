@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -129,13 +130,93 @@ type BxgyInfo struct {
 	BuyX    money.Qty // X per group
 }
 
+// MaxBxgyUnits caps BuyX and FreeY of a buy_x_get_y offer, in whole
+// units (R20-B-F2b, fix-20 lane B).
+//
+// Bound reasoning — the cap must never refuse a realistic legitimate
+// offer, and 100000 is that bound because it is exactly money.MaxQty,
+// the per-line cart cap (100000 units):
+//   - BuyX: a sale line holds at most MaxQty = 100000 units =
+//     100000000 milliunits. groups = paidMilli / (X*1000), so any
+//     X > 100000 gives a divisor > 100000000 >= any legal paid qty and
+//     can never form even one group — capping BuyX at 100000 refuses
+//     nothing that could ever grant.
+//   - FreeY: one group granting more than 100000 free units hands out
+//     more than an entire maximum cart holds. Realistic offers are
+//     buy 2 get 1 / buy 5 get 1 / buy 10 get 2 — three orders of
+//     magnitude below the cap.
+// With the cap, x*1000 and y*1000 are at most 10^8, groups at most
+// 10^5, and the free grant at most 10^13 milliunits — all far inside
+// int64. The evaluation path still checks the math (below) so an
+// already-stored absurd offer (created before this cap) can never
+// panic a sale or store a wrapped grant.
+const MaxBxgyUnits int64 = 100000
+
+// unitsToMilliChecked converts whole units to milliunits (x1000),
+// refusing instead of wrapping when the product overflows int64
+// (R20-B-F2b: x = 2^61 made x*1000 wrap to exactly 0, and the next
+// line divided by it — an integer divide-by-zero panic on every sale).
+func unitsToMilliChecked(units int64) (money.Qty, error) {
+	v := new(big.Int).Mul(big.NewInt(units), big.NewInt(1000))
+	if !v.IsInt64() {
+		return 0, money.ErrOverflow
+	}
+	return money.Qty(v.Int64()), nil
+}
+
+// bxgyFreeQtyChecked computes groups*y whole units in milliunits
+// (groups*y*1000), refusing instead of wrapping when the product
+// overflows int64 (R20-B-F2b: Y = 2^61+500000 wrapped to a 500000-unit
+// grant that was stored on HTTP 200).
+func bxgyFreeQtyChecked(groups, y int64) (money.Qty, error) {
+	v := new(big.Int).Mul(big.NewInt(groups), big.NewInt(y))
+	v.Mul(v, big.NewInt(1000))
+	if !v.IsInt64() {
+		return 0, money.ErrOverflow
+	}
+	return money.Qty(v.Int64()), nil
+}
+
 // EarnedFreeUnits returns floor(keptPaidQty / X) * Y (R-P9).
 // All quantities are milliunits. Exported for the returns builder (B2).
+// R20-B-F2b: overflow-safe — a stored X/Y whose product overflows
+// int64 returns 0 instead of a wrapped value; callers that must refuse
+// the operation use EarnedFreeUnitsChecked and propagate its error.
 func EarnedFreeUnits(paidQty, x, y money.Qty) money.Qty {
-	if paidQty <= 0 || x <= 0 || y <= 0 {
+	v, err := EarnedFreeUnitsChecked(paidQty, x, y)
+	if err != nil {
 		return 0
 	}
-	return (paidQty / x) * y
+	return v
+}
+
+// EarnedFreeUnitsChecked is EarnedFreeUnits with the overflow reported
+// instead of wrapped: floor(paidQty / X) * Y computed in big-int and
+// refused with money.ErrOverflow when the result does not fit int64.
+// x <= 0 / y <= 0 / paidQty <= 0 still yield 0 with no error.
+//
+// R21-C-F1/F2: a stored per-group X/Y above the creation cap
+// (MaxBxgyUnits whole units = MaxBxgyUnits*1000 milliunits) can only
+// come from a pre-cap / legacy row — creation refuses anything larger
+// (domain_promos.go CreateOffer). Its earned grant can still fit int64
+// (e.g. 1 group x Y = 9223372036854775000) while the caller's
+// restore + grant addition then wraps to a negative stock, so the cap
+// is enforced here, at the choke point both the cancel path
+// (domain_sales.go) and the return path (domain_returns.go) share —
+// before any grant is computed, not after it fits.
+func EarnedFreeUnitsChecked(paidQty, x, y money.Qty) (money.Qty, error) {
+	if paidQty <= 0 || x <= 0 || y <= 0 {
+		return 0, nil
+	}
+	if x > money.Qty(MaxBxgyUnits*1000) || y > money.Qty(MaxBxgyUnits*1000) {
+		return 0, money.ErrOverflow
+	}
+	groups := int64(paidQty) / int64(x)
+	v := new(big.Int).Mul(big.NewInt(groups), big.NewInt(int64(y)))
+	if !v.IsInt64() {
+		return 0, money.ErrOverflow
+	}
+	return money.Qty(v.Int64()), nil
 }
 
 // --- value parsing helpers (stored TEXT is tolerant: int cents, or
@@ -175,7 +256,7 @@ func parsePctText(s string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int64(f), nil
+	return money.FloatToInt64(f)
 }
 
 // offerValue returns the parsed Value: pct for *_pct, cents for
@@ -310,8 +391,14 @@ func validateOfferInput(in OfferInput) error {
 		if in.BuyX < 1 {
 			return errors.New("عدد الوحدات المدفوعة يجب أن يكون عددًا صحيحًا أكبر من صفر")
 		}
+		if in.BuyX > MaxBxgyUnits {
+			return errors.New("عدد الوحدات المدفوعة كبير جدًا — الحد الأقصى 100000 وحدة")
+		}
 		if in.FreeY < 1 {
 			return errors.New("عدد الوحدات المجانية يجب أن يكون عددًا صحيحًا أكبر من صفر")
+		}
+		if in.FreeY > MaxBxgyUnits {
+			return errors.New("عدد الوحدات المجانية كبير جدًا — الحد الأقصى 100000 وحدة")
 		}
 	default:
 		return errors.New("نوع العرض غير صحيح")
@@ -876,7 +963,9 @@ type PromoLine struct {
 // invoice agree. Qty, gross, item discount and line total are summed
 // exactly; the unit price becomes the weighted average when the
 // additions had different prices.
-func MergePromoLines(lines []PromoLine) []PromoLine {
+// R19-B-F2: returns an error when the merged weighted-average unit
+// price overflows (avgUnitPrice is checked).
+func MergePromoLines(lines []PromoLine) ([]PromoLine, error) {
 	merged := map[int64]*PromoLine{}
 	var order []int64
 	for _, ln := range lines {
@@ -886,7 +975,11 @@ func MergePromoLines(lines []PromoLine) []PromoLine {
 			m.ItemDiscount += ln.ItemDiscount
 			m.LineTotal += ln.LineTotal
 			if ln.UnitPrice != m.UnitPrice {
-				m.UnitPrice = avgUnitPrice(m.LineGross, m.Qty)
+				avg, aerr := avgUnitPrice(m.LineGross, m.Qty)
+				if aerr != nil {
+					return nil, aerr
+				}
+				m.UnitPrice = avg
 			}
 		} else {
 			cp := ln
@@ -898,7 +991,7 @@ func MergePromoLines(lines []PromoLine) []PromoLine {
 	for _, id := range order {
 		out = append(out, *merged[id])
 	}
-	return out
+	return out, nil
 }
 // invoice-level offer BEFORE the R-P3 cap (the caller caps it against
 // the remainder after the manual invoice discount).
@@ -922,9 +1015,15 @@ type PromoResult struct {
 	InvoiceBestOffer *Offer
 }
 
-func pctOf(amount money.Cents, pct int64) money.Cents {
+// R19-B-F2: the amount*pct step is checked — an admin offer with a huge
+// pct used to wrap here and store a wrong saving.
+func pctOf(amount money.Cents, pct int64) (money.Cents, error) {
 	// round half away from zero (amounts are >= 0 here)
-	return money.Cents((int64(amount)*pct + 50) / 100)
+	v, err := money.MulDivRound(int64(amount), pct, 100)
+	if err != nil {
+		return 0, err
+	}
+	return money.Cents(v), nil
 }
 
 // EvaluateOffers picks the best offers for prepared lines (no DB writes).
@@ -978,7 +1077,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 				if err != nil {
 					continue
 				}
-				saved = pctOf(ln.LineTotal, pct)
+				p, perr := pctOf(ln.LineTotal, pct)
+				if perr != nil {
+					return nil, perr
+				}
+				saved = p
 			case OfferCategoryPct:
 				if ln.Category == "" || !offerTargetsCategory(o, ln.Category) {
 					continue
@@ -987,7 +1090,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 				if err != nil {
 					continue
 				}
-				saved = pctOf(ln.LineTotal, pct)
+				p, perr := pctOf(ln.LineTotal, pct)
+				if perr != nil {
+					return nil, perr
+				}
+				saved = p
 			case OfferProductFixed:
 				// R-P10: fixed amount off the product's PRICE, PER
 				// UNIT — the saving on a line is amount × qty,
@@ -999,7 +1106,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 				if err != nil {
 					continue
 				}
-				saved = money.MulQty(amount, ln.Qty)
+				s, serr := money.MulQty(amount, ln.Qty)
+				if serr != nil {
+					return nil, serr
+				}
+				saved = s
 			case OfferProductPrice:
 				// R-P11: the promo price is the FINAL sale price per
 				// unit — per-unit saving = current unit price −
@@ -1017,7 +1128,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 				if unitSaved < 0 {
 					unitSaved = 0
 				}
-				saved = money.MulQty(unitSaved, ln.Qty)
+				s, serr := money.MulQty(unitSaved, ln.Qty)
+				if serr != nil {
+					return nil, serr
+				}
+				saved = s
 			default:
 				continue
 			}
@@ -1083,7 +1198,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 				if take > need {
 					take = need
 				}
-				portion := money.Cents(int64(ln.LineTotal) * int64(take) / int64(ln.Qty))
+				portion64, perr := money.MulDiv(int64(ln.LineTotal), int64(take), int64(ln.Qty))
+				if perr != nil {
+					return nil, perr
+				}
+				portion := money.Cents(portion64)
 				bundleTotal += portion
 				lineIdxs[idx] = true
 				portions[idx] += portion
@@ -1146,7 +1265,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 			} else {
 				share := money.Cents(0)
 				if bw.total > 0 {
-					share = money.Cents(int64(bw.saved) * int64(bw.portions[idx]) / int64(bw.total))
+					share64, serr := money.MulDiv(int64(bw.saved), int64(bw.portions[idx]), int64(bw.total))
+					if serr != nil {
+						return nil, serr
+					}
+					share = money.Cents(share64)
 				}
 				alloc[idx] = share
 				remainder -= share
@@ -1180,6 +1303,15 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 		if target == nil {
 			continue
 		}
+		// R20-B-F2b: an offer whose target is not in the cart must not
+		// touch the division at all. The old code divided by the
+		// (possibly wrapped) x*1000 for EVERY live bxgy offer, so one
+		// absurd offer panicked every sale — even of untargeted
+		// products — until it was deactivated.
+		paid := paidQty[target.TargetID]
+		if paid <= 0 {
+			continue
+		}
 		_, _, x, err := o.offerValue()
 		if err != nil || x < 1 {
 			continue
@@ -1188,12 +1320,28 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 		if err != nil || y < 1 {
 			continue
 		}
-		groups := int64(paidQty[target.TargetID]) / (x * 1000)
+		// Checked divisor: x*1000 wraps to 0 at x = 2^61, and a
+		// zero divisor panics. Refuse the sale (400, nothing stored)
+		// instead of dividing by a wrapped zero.
+		xMilli, err := unitsToMilliChecked(x)
+		if err != nil {
+			return nil, err
+		}
+		groups := int64(paid) / int64(xMilli)
 		if groups <= 0 {
 			continue
 		}
-		free := money.Qty(groups * y * 1000)
-		saved := money.MulQty(lowPrice[target.TargetID], free)
+		// Checked grant: groups*y*1000 wraps at absurd Y (2^61-scale)
+		// and used to store a wrong free grant on HTTP 200. Refuse
+		// the sale instead of storing the wrapped grant.
+		free, err := bxgyFreeQtyChecked(groups, y)
+		if err != nil {
+			return nil, err
+		}
+		saved, serr := money.MulQty(lowPrice[target.TargetID], free)
+		if serr != nil {
+			return nil, serr
+		}
 		if prev, ok := bxgyBest[target.TargetID]; !ok || free > prev.free {
 			bxgyBest[target.TargetID] = bxgyCand{free, saved, o, x, y}
 		}
@@ -1237,9 +1385,27 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 			delete(finalPromo, idx)
 		}
 		res.FreeUnits[pid] = cand.free
-		res.FreeCost += money.MulQty(buyPrice[pid], cand.free)
+		freeCost, ferr := money.MulQty(buyPrice[pid], cand.free)
+		if ferr != nil {
+			return nil, ferr
+		}
+		res.FreeCost, ferr = money.AddChecked(res.FreeCost, freeCost)
+		if ferr != nil {
+			return nil, ferr
+		}
+		// Checked per-group quantities (R20-B-F2b): y*1000 / x*1000
+		// wrap at 2^61-scale Y/X. A stored absurd offer must refuse
+		// the sale, never persist a wrapped BxgyInfo.
+		freeQty, ferr := unitsToMilliChecked(cand.y)
+		if ferr != nil {
+			return nil, ferr
+		}
+		buyX, berr := unitsToMilliChecked(cand.x)
+		if berr != nil {
+			return nil, berr
+		}
 		res.Bxgy[pid] = BxgyInfo{OfferID: cand.offer.ID, Name: cand.offer.Name,
-			FreeQty: money.Qty(cand.y * 1000), BuyX: money.Qty(cand.x * 1000)}
+			FreeQty: freeQty, BuyX: buyX}
 	}
 	res.LinePromos = map[int]money.Cents{}
 	for idx, v := range finalPromo {
@@ -1278,8 +1444,9 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 		if unitSaved < 0 {
 			unitSaved = 0
 		}
-		if saved != money.MulQty(unitSaved, lines[idx].Qty) {
-			continue // capped: keep the discount form
+		recomputed, rerr := money.MulQty(unitSaved, lines[idx].Qty)
+		if rerr != nil || saved != recomputed {
+			continue // capped (or overflowing): keep the discount form
 		}
 		res.LinePrice[idx] = promoPrice
 	}
@@ -1302,8 +1469,12 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 		res.Applied = append(res.Applied, *a)
 	}
 	for pid, info := range res.Bxgy {
+		bxgySaved, berr := money.MulQty(lowPrice[pid], res.FreeUnits[pid])
+		if berr != nil {
+			return nil, berr
+		}
 		res.Applied = append(res.Applied, AppliedOffer{OfferID: info.OfferID, Name: info.Name,
-			Saved: money.MulQty(lowPrice[pid], res.FreeUnits[pid]), ProductID: pid,
+			Saved: bxgySaved, ProductID: pid,
 			BuyQty: info.BuyX, FreeQty: info.FreeQty})
 	}
 	// Invoice-level offers: best single, once (R-P1/R-P3).
@@ -1332,7 +1503,11 @@ func (s *Store) EvaluateOffers(ctx context.Context, lines []PromoLine) (*PromoRe
 			if err != nil {
 				continue
 			}
-			saved = pctOf(subtotal, pct)
+			p, perr := pctOf(subtotal, pct)
+			if perr != nil {
+				return nil, perr
+			}
+			saved = p
 		default:
 			continue
 		}

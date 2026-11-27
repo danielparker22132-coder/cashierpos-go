@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"cashierpos-go/internal/money"
@@ -117,6 +118,68 @@ func TestExpenseUpdateDelete(t *testing.T) {
 	}
 	if err := s.DeleteExpense(ctx, u, expID2); err == nil {
 		t.Fatal("expected delete after close to be rejected")
+	}
+}
+
+func TestExpenseUpdateOwnership(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	cash1 := b2TestUser(t, s, "cash1", "cashier")
+	cash2 := b2TestUser(t, s, "cash2", "cashier")
+	admin := b2TestUser(t, s, "admin1", "admin")
+	mgr := b2TestUser(t, s, "mgr1", "manager")
+	sup := b2TestUser(t, s, "sup1", "supervisor")
+	if _, err := s.OpenShift(ctx, cash1, money.Cents(10000), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenShift(ctx, admin, money.Cents(10000), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenShift(ctx, sup, money.Cents(10000), false); err != nil {
+		t.Fatal(err)
+	}
+	adminExp, err := s.RegisterExpense(ctx, admin, "مصروف المدير", money.Cents(1000), "عام")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// FIX-18 O-C2: a cashier may not rewrite another user's expense.
+	err = s.UpdateExpense(ctx, cash1, adminExp, "مخترق", money.Cents(1000), "عام")
+	if err == nil || !strings.Contains(err.Error(), "غير مسموح") || !strings.Contains(err.Error(), "لا يمكن تعديل مصروف مستخدم آخر") {
+		t.Fatalf("cashier updating admin expense: want the uniform denial, got %v", err)
+	}
+	e, _ := s.GetExpense(ctx, adminExp)
+	if e.Description != "مصروف المدير" || e.Amount != 1000 {
+		t.Fatalf("denied update rewrote the row: %+v", e)
+	}
+	// Another cashier is refused too; a supervisor likewise.
+	if err := s.UpdateExpense(ctx, cash2, adminExp, "مخترق", money.Cents(1000), "عام"); err == nil {
+		t.Fatal("cashier2 updating admin expense must be refused")
+	}
+	if err := s.UpdateExpense(ctx, sup, adminExp, "مخترق", money.Cents(1000), "عام"); err == nil {
+		t.Fatal("supervisor updating admin expense must be refused")
+	}
+	// Own expense: allowed for cashier and supervisor alike.
+	ownExp, err := s.RegisterExpense(ctx, cash1, "مصروف الكاشير", money.Cents(500), "عام")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateExpense(ctx, cash1, ownExp, "مصروف الكاشير المعدل", money.Cents(500), "عام"); err != nil {
+		t.Fatalf("cashier updating own expense: %v", err)
+	}
+	supExp, err := s.RegisterExpense(ctx, sup, "مصروف المشرف", money.Cents(500), "عام")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateExpense(ctx, sup, supExp, "مصروف المشرف المعدل", money.Cents(500), "عام"); err != nil {
+		t.Fatalf("supervisor updating own expense: %v", err)
+	}
+	// Manager (counts as admin) may update any expense.
+	if err := s.UpdateExpense(ctx, mgr, adminExp, "مصروف المدير المعدل", money.Cents(1000), "عام"); err != nil {
+		t.Fatalf("manager updating admin expense: %v", err)
+	}
+	e, _ = s.GetExpense(ctx, adminExp)
+	if e.Description != "مصروف المدير المعدل" {
+		t.Fatalf("manager update did not land: %+v", e)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cashierpos-go/internal/auth"
@@ -251,6 +252,11 @@ func TestFix2_ReopenAddsPurchaseFKs(t *testing.T) {
 		t.Fatalf("open old DB: %v", err)
 	}
 	defer s.Close()
+	// FIX-13 (coordinator, R13-M3 extension): the rebuild must leave FK
+	// enforcement ON — the same guarantee ResetDatabase now gives.
+	if on := fkOn(t, s); on != 1 {
+		t.Fatalf("foreign_keys after rebuild = %d, want 1", on)
+	}
 	hasFK := func(table, from, ref string) bool {
 		rows, err := s.DB.Query(fmt.Sprintf(`PRAGMA foreign_key_list(%s)`, table))
 		if err != nil {
@@ -297,5 +303,143 @@ func TestFix2_ReopenAddsPurchaseFKs(t *testing.T) {
 	// The new FK actually enforces: an orphan purchase is refused.
 	if _, err := s.DB.Exec(`INSERT INTO PurchaseInvoices(InvoiceNumber,VendorID,TotalAmount) VALUES('P-2',999,100)`); err == nil {
 		t.Fatal("orphan purchase invoice (VendorID=999) must be refused by the FK")
+	}
+}
+
+// --- FIX-26 lane D (R26-D-F2): backup failures must return static
+// Arabic only — the HTML handlers render the store error verbatim, so
+// a raw OS/driver error would leak a server filesystem path
+// ("mkdir /…/backups: not a directory"). The raw error is logged
+// server-side by backupFail; nothing raw may reach the caller.
+
+func TestFix26D_BackupBlockedDirStaticArabic(t *testing.T) {
+	s, dir := openFileStore(t)
+	ctx := context.Background()
+	admin := testAdmin()
+	// A regular file standing where the backups directory must be.
+	if err := os.WriteFile(filepath.Join(dir, "backups"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.CreateBackup(ctx, admin)
+	if err == nil {
+		t.Fatal("CreateBackup with a blocked backups dir must fail")
+	}
+	if got := err.Error(); got != "تعذّر إنشاء مجلد النسخ المحلي" {
+		t.Fatalf("CreateBackup blocked-dir error = %q, want exactly the static Arabic text", got)
+	}
+	for _, leak := range []string{dir, "mkdir", "not a directory", "/backups"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("CreateBackup blocked-dir error leaks %q in %q", leak, err.Error())
+		}
+	}
+}
+
+func TestFix26D_RestoreCorruptStaticArabic(t *testing.T) {
+	s, _ := openFileStore(t)
+	ctx := context.Background()
+	admin := testAdmin()
+	res, err := s.CreateBackup(ctx, admin)
+	if err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+	// Corrupt a byte in the backup file (same corruption as
+	// TestFix1_VerifyBackupIntegrity).
+	data, err := os.ReadFile(res.LocalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[100] ^= 0xFF
+	if err := os.WriteFile(res.LocalPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = s.RestoreBackup(ctx, admin, "local", res.FileName)
+	if err == nil {
+		t.Fatal("RestoreBackup of a corrupt backup must fail")
+	}
+	if got := err.Error(); got != "التحقق من النسخة فشل — لن تتم الاستعادة" {
+		t.Fatalf("RestoreBackup corrupt error = %q, want exactly the static Arabic text", got)
+	}
+	for _, leak := range []string{res.LocalPath, "SQL logic error", "file is not a database",
+		"database disk image is malformed", "integrity", "not a directory"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("RestoreBackup corrupt error leaks %q in %q", leak, err.Error())
+		}
+	}
+}
+
+func TestFix26D_VerifyBackupFileStaticArabic(t *testing.T) {
+	s, _ := openFileStore(t)
+	ctx := context.Background()
+	admin := testAdmin()
+	res, err := s.CreateBackup(ctx, admin)
+	if err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+	data, err := os.ReadFile(res.LocalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[100] ^= 0xFF
+	corrupt := res.LocalPath + ".corrupt"
+	if err := os.WriteFile(corrupt, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = VerifyBackupFile(corrupt)
+	if err == nil {
+		t.Fatal("VerifyBackupFile of a corrupt backup must fail")
+	}
+	for _, leak := range []string{corrupt, res.LocalPath, "SQL logic error",
+		"file is not a database", "database disk image is malformed"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("VerifyBackupFile corrupt error leaks %q in %q", leak, err.Error())
+		}
+	}
+	if strings.Contains(err.Error(), "فحص السلامة: ") {
+		t.Fatalf("VerifyBackupFile corrupt error leaks integrity detail in %q", err.Error())
+	}
+}
+
+func TestFix26D_CloudCopyFailureStaticArabic(t *testing.T) {
+	s, dir := openFileStore(t)
+	ctx := context.Background()
+	admin := testAdmin()
+	cloudDir := filepath.Join(dir, "cloud")
+	if err := os.MkdirAll(cloudDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveCloudBackupSettings(ctx, admin, CloudBackupSettings{
+		Enabled: true, Dir: cloudDir, Time: "03:00", Keep: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Force copyFile to fail deterministically: plant a directory at
+	// the exact path the cloud copy will be written to. The name is
+	// second-precision, so retry with a fresh name if the second rolls
+	// over between planting and CreateBackup (each miss only costs a
+	// local backup + a planted dir in the temp tree).
+	var res BackupResult
+	var err error
+	hit := false
+	for attempt := 0; attempt < 8 && !hit; attempt++ {
+		name := backupFileName()
+		_ = os.Mkdir(filepath.Join(cloudDir, name), 0o755)
+		res, err = s.CreateBackup(ctx, admin)
+		if err != nil {
+			t.Fatalf("CreateBackup (cloud copy blocked): %v", err)
+		}
+		if res.CloudStatus == CloudError {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatal("could not land a cloud-copy failure in 8 attempts (second kept rolling over)")
+	}
+	if got := res.Error; got != "فشل كتابة النسخة السحابية" {
+		t.Fatalf("cloud copy res.Error = %q, want exactly the static Arabic text", got)
+	}
+	for _, leak := range []string{cloudDir, "is a directory", "not a directory"} {
+		if strings.Contains(res.Error, leak) {
+			t.Fatalf("cloud copy res.Error leaks %q in %q", leak, res.Error)
+		}
 	}
 }

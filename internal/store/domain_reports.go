@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"cashierpos-go/internal/auth"
 	"cashierpos-go/internal/money"
@@ -200,7 +201,7 @@ func loadProfitLines(q profitQuerier, from, to, saleType string) ([]profitLine, 
 		WHERE i.IsCanceled=0 AND substr(i.InvoiceDate,1,10) BETWEEN ? AND ?`+filter+`
 		ORDER BY i.InvoiceID, d.DetailID`, args...)
 	if err != nil {
-		return nil, err
+		return nil, sumScanErr(err)
 	}
 	defer rows.Close()
 	type raw struct {
@@ -220,7 +221,7 @@ func loadProfitLines(q profitQuerier, from, to, saleType string) ([]profitLine, 
 		var qty, total, promo, buy, disc, free, itemDisc int64
 		if err := rows.Scan(&r.pl.InvoiceID, &r.pl.SaleType, &r.pl.ProductID, &r.pl.ProductName,
 			&qty, &total, &promo, &buy, &disc, &free, &itemDisc); err != nil {
-			return nil, err
+			return nil, sumScanErr(err)
 		}
 		r.pl.Qty = money.Qty(qty)
 		r.pl.Total = money.Cents(total)
@@ -228,7 +229,11 @@ func loadProfitLines(q profitQuerier, from, to, saleType string) ([]profitLine, 
 		r.pl.Buy = money.Cents(buy)
 		r.discount = money.Cents(disc)
 		r.itemDisc = money.Cents(itemDisc)
-		r.lineProfit = r.pl.Total - r.pl.Promo - money.MulQty(r.pl.Buy, r.pl.Qty)
+		cost, cerr := money.MulQty(r.pl.Buy, r.pl.Qty)
+		if cerr != nil {
+			return nil, cerr
+		}
+		r.lineProfit = r.pl.Total - r.pl.Promo - cost
 		r.base = r.pl.Total - r.pl.Promo
 		if r.base < 0 {
 			r.base = 0
@@ -246,7 +251,7 @@ func loadProfitLines(q profitQuerier, from, to, saleType string) ([]profitLine, 
 		raws = append(raws, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, sumScanErr(err)
 	}
 	// Allocate each invoice's deduction pro-rata across its lines by
 	// base (Total − Promo); the remainder lands on the last line with
@@ -271,7 +276,11 @@ func loadProfitLines(q profitQuerier, from, to, saleType string) ([]profitLine, 
 			if pos == len(idxs)-1 {
 				share = remain
 			} else if baseTotal > 0 {
-				share = money.Cents(int64(deduct) * int64(raws[i].base) / int64(baseTotal))
+				share64, serr := money.MulDiv(int64(deduct), int64(raws[i].base), int64(baseTotal))
+				if serr != nil {
+					return nil, serr
+				}
+				share = money.Cents(share64)
 			}
 			raws[i].lineProfit -= share
 			remain -= share
@@ -291,6 +300,144 @@ func loadProfitLines(q profitQuerier, from, to, saleType string) ([]profitLine, 
 // reportRange validates a report date range.
 func reportRange(from, to string) error { return validateRange(from, to) }
 
+// returnProfitAdj is the profit to subtract for returns in a range,
+// in total and broken down by product and by invoice sale type.
+// FIX-17 SW2-L01: it also carries each product's returned quantity and
+// refunded revenue, so TopProducts can put qty/revenue on the same NET
+// basis as profit (the same rows, same day resolution, same filters).
+type returnProfitAdj struct {
+	total           money.Cents
+	byProduct       map[int64]money.Cents
+	bySaleType      map[string]money.Cents
+	byProductQty    map[int64]money.Qty
+	byProductRefund map[int64]money.Cents
+}
+
+// returnProfitAdjustments computes the profit to subtract for returns
+// dated in [from,to] — the same rule DailyClose applies (FIX-12
+// SW-H06): each return of a non-canceled invoice removes
+// (refund − qty×buy) from profit, with the voided free-unit cost added
+// back (the units are back in stock). Returns are dated by
+// returnsRowDay, so a malformed/empty ReturnDate resolves through its
+// CashBox leg / shift / invoice exactly like DailyClose does. When
+// saleType != "" only returns of invoices of that sale type count.
+func (s *Store) returnProfitAdjustments(ctx context.Context, from, to, saleType string) (returnProfitAdj, error) {
+	adj := returnProfitAdj{
+		byProduct:       map[int64]money.Cents{},
+		bySaleType:      map[string]money.Cents{},
+		byProductQty:    map[int64]money.Qty{},
+		byProductRefund: map[int64]money.Cents{},
+	}
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT r.InvoiceID, r.ProductID, r.TotalRefund, r.Quantity,
+			COALESCE(NULLIF(r.BuyPrice,0),(SELECT d.BuyPrice FROM InvoiceDetails d
+				WHERE d.InvoiceID=r.InvoiceID AND d.ProductID=r.ProductID LIMIT 1),0) AS BuyPrice,
+			r.VoidedFreeCost, i.IsCanceled, COALESCE(r.ReturnDate,''), COALESCE(r.ShiftID,0),
+			r.ReturnID, COALESCE(r.ReturnEventID,0), COALESCE(i.SaleType,'')
+			FROM Returns r LEFT JOIN Invoices i ON i.InvoiceID=r.InvoiceID
+			WHERE substr(r.ReturnDate,1,10) BETWEEN ? AND ? OR r.ReturnDate IS NULL
+				OR substr(r.ReturnDate,1,10) NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`, from, to)
+		if err != nil {
+			return err
+		}
+		type retRow struct {
+			invID      int64
+			productID  int64
+			refund     int64
+			qty        int64
+			buy        int64
+			voidedCost int64
+			canceled   sql.NullInt64
+			retDate    string
+			shiftID    int64
+			retID      int64
+			eventID    int64
+			invSaleType string
+		}
+		var rets []retRow
+		for rows.Next() {
+			var pr retRow
+			if err := rows.Scan(&pr.invID, &pr.productID, &pr.refund, &pr.qty, &pr.buy,
+				&pr.voidedCost, &pr.canceled, &pr.retDate, &pr.shiftID, &pr.retID, &pr.eventID,
+				&pr.invSaleType); err != nil {
+				rows.Close()
+				return err
+			}
+			rets = append(rets, pr)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, pr := range rets {
+			day := returnsRowDay(tx, pr.invID, pr.shiftID, pr.retID, pr.eventID, pr.retDate)
+			if day < from || day > to {
+				continue
+			}
+			if pr.canceled.Valid && pr.canceled.Int64 != 0 {
+				continue
+			}
+			if saleType != "" && pr.invSaleType != saleType {
+				continue
+			}
+			// Same arithmetic as DailyClose: profit -= refund − qty×buy,
+			// profit += voidedCost.
+			cost, cerr := money.MulQty(money.Cents(pr.buy), money.Qty(pr.qty))
+			if cerr != nil {
+				return cerr
+			}
+			effect, cerr := money.SubChecked(money.Cents(pr.refund), cost)
+			if cerr != nil {
+				return cerr
+			}
+			effect, cerr = money.SubChecked(effect, money.Cents(pr.voidedCost))
+			if cerr != nil {
+				return cerr
+			}
+			adj.total += effect
+			adj.byProduct[pr.productID] += effect
+			adj.bySaleType[pr.invSaleType] += effect
+			// FIX-17 SW2-L01: the same return also removes its qty
+			// and its refunded revenue from the product row.
+			adj.byProductQty[pr.productID] += money.Qty(pr.qty)
+			adj.byProductRefund[pr.productID] += money.Cents(pr.refund)
+		}
+		return nil
+	})
+	return adj, err
+}
+
+// FIX-19 R19-B-F1: net-received paid amount of one invoice row.
+//
+// PaidAmount is the gross cash received on an invoice (at-sale payment
+// + later collections) and is deliberately never zeroed by ProcessReturn
+// (FIX-18 R18-B-02) — it is a historical fact. But the reports' TotalPaid
+// must show the cash still held, so each invoice contributes
+// PaidAmount minus the cash actually refunded on it. ProcessReturn posts
+// every paid-out refund as a negative Payments row (domain_returns.go:
+// the paid-out leg, Amount = -paidOut where paidOut = TotalRefund -
+// debtReduction), while the debt-absorbed part of a return never touches
+// Payments at all — so the negative-Payments sum is exactly the refunded
+// payment: no more (subtracting Returns.TotalRefund would also remove
+// the debt part, which was never paid) and no less (a partial return
+// whose refund exceeds the remaining debt does pay cash out, and a
+// fully-returned invoice nets to exactly 0 because paidOut then equals
+// PaidAmount). This is the same predicate FIX-18 B-02 uses for
+// LastPayment (PaidAmount > refunded), expressed here as a value.
+//
+// The refund is attributed to the invoice's own (sale) payment method:
+// the at-sale payment and later collections are already counted under
+// that method, so the refund reverses that same receipt. The total is
+// unaffected by the attribution either way.
+//
+// The refund is netted per invoice regardless of the return's date
+// (same as B-02): a sale-period report shows the net cash held for
+// sales of that period. All four consumers below use this one
+// expression, so the summary query, the per-method queries and the
+// CustomerReportFor loop agree exactly. Profit netting is untouched —
+// it already nets returns via returnProfitAdjustments.
+const netPaidExpr = `i.PaidAmount - COALESCE((SELECT -SUM(p.Amount) FROM Payments p WHERE p.InvoiceID=i.InvoiceID AND p.Amount<0),0)`
+
 // SalesReportFor returns the sales report for a range (Admin/Supervisor).
 func (s *Store) SalesReportFor(ctx context.Context, user *auth.User, from, to string) (SalesReport, error) {
 	var r SalesReport
@@ -302,11 +449,11 @@ func (s *Store) SalesReportFor(ctx context.Context, user *auth.User, from, to st
 	}
 	r.From, r.To = from, to
 	err := s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0), COALESCE(SUM(TotalAmount),0), COALESCE(SUM(Discount),0),
-		COALESCE(SUM(NetAmount),0), COALESCE(SUM(PaidAmount),0), COALESCE(SUM(RemainingAmount),0)
-		FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?`,
+		COALESCE(SUM(NetAmount),0), COALESCE(SUM(`+netPaidExpr+`),0), COALESCE(SUM(RemainingAmount),0)
+		FROM Invoices i WHERE i.IsCanceled=0 AND substr(i.InvoiceDate,1,10) BETWEEN ? AND ?`,
 		from, to).Scan(&r.InvoiceCount, &r.TotalSales, &r.TotalGross, &r.TotalDiscount, &r.TotalNet, &r.TotalPaid, &r.TotalRemaining)
 	if err != nil {
-		return r, err
+		return r, sumScanErr(err)
 	}
 	// Unified profit (FIX-1 M1): same definition as InvoiceProfit.
 	plines, err := loadProfitLines(s.DB, from, to, "")
@@ -316,41 +463,49 @@ func (s *Store) SalesReportFor(ctx context.Context, user *auth.User, from, to st
 	for _, ln := range plines {
 		r.TotalProfit += ln.Profit
 	}
+	// FIX-12 SW-H06: returns remove their profit, exactly like
+	// DailyClose — without this the report overstates profit by the
+	// return profit.
+	if adj, err := s.returnProfitAdjustments(ctx, from, to, ""); err != nil {
+		return r, err
+	} else {
+		r.TotalProfit -= adj.total
+	}
 	dayRows, err := s.DB.Query(`SELECT substr(InvoiceDate,1,10), COUNT(*), COALESCE(SUM(NetAmount),0)
 		FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
 		GROUP BY substr(InvoiceDate,1,10) ORDER BY 1`, from, to)
 	if err != nil {
-		return r, err
+		return r, sumScanErr(err)
 	}
 	for dayRows.Next() {
 		var d DayRow
 		var tot int64
 		if err := dayRows.Scan(&d.Day, &d.InvoiceCount, &tot); err != nil {
 			dayRows.Close()
-			return r, err
+			return r, sumScanErr(err)
 		}
 		d.Total = money.Cents(tot)
 		r.ByDay = append(r.ByDay, d)
 	}
 	dayRows.Close()
-	payRows, err := s.DB.Query(`SELECT PaymentMethod, COUNT(*), COALESCE(SUM(PaidAmount),0)
-		FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
-		GROUP BY PaymentMethod ORDER BY SUM(PaidAmount) DESC`, from, to)
+	payRows, err := s.DB.Query(`SELECT PaymentMethod, COUNT(*), COALESCE(SUM(`+netPaidExpr+`),0)
+		FROM Invoices i WHERE i.IsCanceled=0 AND substr(i.InvoiceDate,1,10) BETWEEN ? AND ?
+		GROUP BY PaymentMethod ORDER BY SUM(`+netPaidExpr+`) DESC`, from, to)
 	if err != nil {
-		return r, err
+		return r, sumScanErr(err)
 	}
 	for payRows.Next() {
 		var p PaymentRow
 		var tot int64
 		if err := payRows.Scan(&p.Method, &p.Count, &tot); err != nil {
 			payRows.Close()
-			return r, err
+			return r, sumScanErr(err)
 		}
 		p.Total = money.Cents(tot)
 		r.ByPayment = append(r.ByPayment, p)
 	}
 	payRows.Close()
-	return r, payRows.Err()
+	return r, sumScanErr(payRows.Err())
 }
 
 // ProfitReportFor returns the profit report / analysis for a range.
@@ -378,12 +533,29 @@ func (s *Store) ProfitReportFor(ctx context.Context, user *auth.User, from, to, 
 	byProd := map[int64]*ProductProfitRow{}
 	var prodOrder []int64
 	for _, ln := range plines {
-		r.TotalSales += ln.Total
-		r.TotalProfit += ln.Profit
-		r.TotalCost += money.MulQty(ln.Buy, ln.Qty)
+		var err error
+		r.TotalSales, err = money.AddChecked(r.TotalSales, ln.Total)
+		if err != nil {
+			return ProfitReport{}, err
+		}
+		r.TotalProfit, err = money.AddChecked(r.TotalProfit, ln.Profit)
+		if err != nil {
+			return ProfitReport{}, err
+		}
+		cost, err := money.MulQty(ln.Buy, ln.Qty)
+		if err != nil {
+			return ProfitReport{}, err
+		}
+		r.TotalCost, err = money.AddChecked(r.TotalCost, cost)
+		if err != nil {
+			return ProfitReport{}, err
+		}
 		if !seenFree[ln.InvoiceID] {
 			seenFree[ln.InvoiceID] = true
-			r.TotalCost += ln.FreeCost
+			r.TotalCost, err = money.AddChecked(r.TotalCost, ln.FreeCost)
+			if err != nil {
+				return ProfitReport{}, err
+			}
 		}
 		st, ok := byType[ln.SaleType]
 		if !ok {
@@ -409,6 +581,23 @@ func (s *Store) ProfitReportFor(ctx context.Context, user *auth.User, from, to, 
 		st := byType[stName]
 		st.InvoiceCount = int64(len(invPerType[stName]))
 		r.BySaleType = append(r.BySaleType, *st)
+	}
+	// FIX-12 SW-H06: returns remove their profit, exactly like
+	// DailyClose — per sale type and per product as well as in total.
+	// byProd is adjusted here so the Top10/Bottom10 built below from
+	// it already carry the corrected profit.
+	if adj, err := s.returnProfitAdjustments(ctx, from, to, saleType); err != nil {
+		return r, err
+	} else {
+		r.TotalProfit -= adj.total
+		for i := range r.BySaleType {
+			r.BySaleType[i].TotalProfit -= adj.bySaleType[r.BySaleType[i].SaleType]
+		}
+		for pid, effect := range adj.byProduct {
+			if pr, ok := byProd[pid]; ok {
+				pr.TotalProfit -= effect
+			}
+		}
 	}
 	// Products sorted by profit desc (same order as before).
 	all := make([]ProductProfitRow, 0, len(prodOrder))
@@ -444,7 +633,7 @@ func (s *Store) DebtsReportFor(ctx context.Context, user *auth.User) ([]DebtRow,
 		WHERE i.IsCanceled=0 AND i.RemainingAmount>0
 		GROUP BY c.CustomerID,c.CustomerName,c.Phone ORDER BY SUM(i.RemainingAmount) DESC`)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, sumScanErr(err)
 	}
 	defer rows.Close()
 	var out []DebtRow
@@ -453,13 +642,13 @@ func (s *Store) DebtsReportFor(ctx context.Context, user *auth.User) ([]DebtRow,
 		var d DebtRow
 		var bal int64
 		if err := rows.Scan(&d.CustomerID, &d.CustomerName, &d.Phone, &bal, &d.InvoiceCount); err != nil {
-			return nil, 0, err
+			return nil, 0, sumScanErr(err)
 		}
 		d.Balance = money.Cents(bal)
 		total += d.Balance
 		out = append(out, d)
 	}
-	return out, total, rows.Err()
+	return out, total, sumScanErr(rows.Err())
 }
 
 // LowStockReport is provided by B1 (domain_products.go: thin adapter over
@@ -494,6 +683,19 @@ func (s *Store) CanceledInvoicesFor(ctx context.Context, user *auth.User, from, 
 	return out, rows.Err()
 }
 
+// sumScanErr maps a SQL SUM scan failure to the Arabic overflow
+// refusal when SQLite reports an integer overflow (absurd stored
+// rows), and returns any other error unchanged. A failed SUM must
+// never surface as a silent zero in a money total (R22-E-F1: the
+// payments report showed المرتجعات: 0.00 while absurd Returns rows
+// existed, because the Scan error was swallowed with `_ =`).
+func sumScanErr(err error) error {
+	if err != nil && strings.Contains(err.Error(), "integer overflow") {
+		return money.ErrOverflow
+	}
+	return err
+}
+
 // PaymentReportFor returns the payment-method + drawer report (Q-03).
 func (s *Store) PaymentReportFor(ctx context.Context, user *auth.User, from, to string) (PaymentReport, error) {
 	var r PaymentReport
@@ -504,18 +706,18 @@ func (s *Store) PaymentReportFor(ctx context.Context, user *auth.User, from, to 
 		return r, err
 	}
 	r.From, r.To = from, to
-	rows, err := s.DB.Query(`SELECT PaymentMethod, COUNT(*), COALESCE(SUM(PaidAmount),0)
-		FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
-		GROUP BY PaymentMethod ORDER BY SUM(PaidAmount) DESC`, from, to)
+	rows, err := s.DB.Query(`SELECT PaymentMethod, COUNT(*), COALESCE(SUM(`+netPaidExpr+`),0)
+		FROM Invoices i WHERE i.IsCanceled=0 AND substr(i.InvoiceDate,1,10) BETWEEN ? AND ?
+		GROUP BY PaymentMethod ORDER BY SUM(`+netPaidExpr+`) DESC`, from, to)
 	if err != nil {
-		return r, err
+		return r, sumScanErr(err)
 	}
 	for rows.Next() {
 		var p PaymentRow
 		var tot int64
 		if err := rows.Scan(&p.Method, &p.Count, &tot); err != nil {
 			rows.Close()
-			return r, err
+			return r, sumScanErr(err)
 		}
 		p.Total = money.Cents(tot)
 		r.ByMethod = append(r.ByMethod, p)
@@ -525,14 +727,22 @@ func (s *Store) PaymentReportFor(ctx context.Context, user *auth.User, from, to 
 	// FIX-2 M-1: only real cash movements count — 'open', 'resume' and
 	// 'close' rows are snapshots, not money in/out (an open of 10000
 	// plus a close of 14500 used to inflate CashIn/CashOut by 24500).
-	_ = s.DB.QueryRow(`SELECT
+	// R22-E-F1: the SUM scans must surface instead of silently
+	// zeroing the totals — a failed SUM is an error, not a 0.00.
+	if err := sumScanErr(s.DB.QueryRow(`SELECT
 		COALESCE(SUM(CASE WHEN MovementType='in' THEN Amount ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN MovementType='out' THEN Amount ELSE 0 END),0)
-		FROM CashBox WHERE substr(MovementDate,1,10) BETWEEN ? AND ?`, from, to).Scan(&inSum, &outSum)
-	_ = s.DB.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Expenses
-		WHERE substr(ExpenseDate,1,10) BETWEEN ? AND ?`, from, to).Scan(&expSum)
-	_ = s.DB.QueryRow(`SELECT COALESCE(SUM(TotalRefund),0) FROM Returns
-		WHERE substr(ReturnDate,1,10) BETWEEN ? AND ?`, from, to).Scan(&retSum)
+		FROM CashBox WHERE substr(MovementDate,1,10) BETWEEN ? AND ?`, from, to).Scan(&inSum, &outSum)); err != nil {
+		return r, err
+	}
+	if err := sumScanErr(s.DB.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Expenses
+		WHERE substr(ExpenseDate,1,10) BETWEEN ? AND ?`, from, to).Scan(&expSum)); err != nil {
+		return r, err
+	}
+	if err := sumScanErr(s.DB.QueryRow(`SELECT COALESCE(SUM(TotalRefund),0) FROM Returns
+		WHERE substr(ReturnDate,1,10) BETWEEN ? AND ?`, from, to).Scan(&retSum)); err != nil {
+		return r, err
+	}
 	r.CashIn = money.Cents(inSum.Int64)
 	r.CashOut = money.Cents(outSum.Int64)
 	r.Expenses = money.Cents(expSum.Int64)
@@ -565,9 +775,10 @@ func (s *Store) CustomerReportFor(ctx context.Context, user *auth.User, customer
 		return r, err
 	}
 	r.Balance = bal
-	rows, err := s.DB.Query(`SELECT InvoiceID,InvoiceNumber,substr(InvoiceDate,1,10),NetAmount,PaidAmount,RemainingAmount,IsCanceled
-		FROM Invoices WHERE CustomerID=? AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
-		ORDER BY InvoiceDate DESC`, customerID, from, to)
+	rows, err := s.DB.Query(`SELECT i.InvoiceID,i.InvoiceNumber,substr(i.InvoiceDate,1,10),i.NetAmount,i.PaidAmount,i.RemainingAmount,i.IsCanceled,
+		COALESCE((SELECT -SUM(p.Amount) FROM Payments p WHERE p.InvoiceID=i.InvoiceID AND p.Amount<0),0)
+		FROM Invoices i WHERE i.CustomerID=? AND substr(i.InvoiceDate,1,10) BETWEEN ? AND ?
+		ORDER BY i.InvoiceDate DESC`, customerID, from, to)
 	if err != nil {
 		return r, err
 	}
@@ -575,7 +786,8 @@ func (s *Store) CustomerReportFor(ctx context.Context, user *auth.User, customer
 		var inv CustomerInvoiceRow
 		var net, paid, rem int64
 		var canceled int
-		if err := rows.Scan(&inv.InvoiceID, &inv.InvoiceNumber, &inv.InvoiceDate, &net, &paid, &rem, &canceled); err != nil {
+		var refunded int64
+		if err := rows.Scan(&inv.InvoiceID, &inv.InvoiceNumber, &inv.InvoiceDate, &net, &paid, &rem, &canceled, &refunded); err != nil {
 			rows.Close()
 			return r, err
 		}
@@ -585,30 +797,131 @@ func (s *Store) CustomerReportFor(ctx context.Context, user *auth.User, customer
 		if !inv.Canceled {
 			r.InvoiceCount++
 			r.TotalSales += inv.NetAmount
-			r.TotalPaid += inv.PaidAmount
+			// FIX-19 R19-B-F1: net the refunded payment out of
+			// TotalPaid (same netPaidExpr as the SQL summaries);
+			// the per-row PaidAmount above stays the gross
+			// historical fact.
+			r.TotalPaid += inv.PaidAmount - money.Cents(refunded)
 		}
 	}
 	rows.Close()
 	// CustomerPayments.PaymentMethod is stored now (FIX-1 M2) — read it
 	// instead of hard-coding 'Cash'.
-	payRows, err := s.DB.Query(`SELECT substr(PaymentDate,1,10),Amount,COALESCE(PaymentMethod,'Cash'),COALESCE(ReceivedBy,'')
-		FROM CustomerPayments WHERE CustomerID=? AND substr(PaymentDate,1,10) BETWEEN ? AND ?
-		ORDER BY PaymentDate DESC`, customerID, from, to)
+	// FIX-22 R22-A-F1: same class as FIX-21 R21-B-F1 on the statement —
+	// a collection on an invoice that was later canceled is part of
+	// that void, not a live payment, so it must not stay in the
+	// report's "المدفوعات" table while the header total (computed
+	// from the invoices loop above, non-canceled only) reads 0.00.
+	// Scope mirrors CustomerStatement leg 1: a collection counts only
+	// when its invoice is NULL/0 (walk-in, no invoice) or non-canceled.
+	payRows, err := s.DB.Query(`SELECT substr(cp.PaymentDate,1,10),cp.Amount,COALESCE(cp.PaymentMethod,'Cash'),COALESCE(cp.ReceivedBy,''),cp.InvoiceID
+		FROM CustomerPayments cp WHERE cp.CustomerID=? AND substr(cp.PaymentDate,1,10) BETWEEN ? AND ?
+		AND (cp.InvoiceID IS NULL OR cp.InvoiceID=0 OR EXISTS (SELECT 1 FROM Invoices i
+			WHERE i.InvoiceID=cp.InvoiceID AND i.IsCanceled=0))
+		ORDER BY cp.PaymentDate DESC, cp.CPaymentID DESC`, customerID, from, to)
 	if err != nil {
 		return r, err
 	}
+	type rawPayment struct {
+		row     CustomerPaymentRow
+		invID   sql.NullInt64
+	}
+	var raw []rawPayment
 	for payRows.Next() {
 		var p CustomerPaymentRow
 		var amt int64
-		if err := payRows.Scan(&p.PaymentDate, &amt, &p.Method, &p.ReceivedBy); err != nil {
+		var invID sql.NullInt64
+		if err := payRows.Scan(&p.PaymentDate, &amt, &p.Method, &p.ReceivedBy, &invID); err != nil {
 			payRows.Close()
 			return r, err
 		}
 		p.Amount = money.Cents(amt)
-		r.Payments = append(r.Payments, p)
+		raw = append(raw, rawPayment{row: p, invID: invID})
 	}
 	payRows.Close()
-	return r, payRows.Err()
+	if err := payRows.Err(); err != nil {
+		return r, err
+	}
+	// FIX-23 R23-A-F1: the table was refund-blind — a collection fully
+	// refunded by a return (no cancel) stayed listed at gross while
+	// the header TotalPaid above nets the same refund per invoice
+	// (PaidAmount - refunded). Mirror the ListDebtors net-received
+	// gate, but keep the row (at its NET amount) instead of dropping
+	// it outright: a partially-refunded collection is still held in
+	// part, so the row must read the net received amount, and a
+	// fully-refunded one nets to 0 and drops out, leaving the table
+	// empty exactly as the header reads 0.00. Refunds are the
+	// negative Payments rows on the invoice (same subquery the
+	// header uses); the refund is applied to that invoice's rows
+	// newest-first (the query order above is PaymentDate DESC with
+	// CPaymentID DESC as the tie-breaker — FIX-24 R24-A-O1: Now() is
+	// second-precision, so same-second collections need the ID tie
+	// to make refund allocation deterministic), so
+	// the rows still sum to the net received on the invoice and no
+	// row ever goes negative. Walk-in rows (NULL/0 InvoiceID)
+	// cannot be attributed to a refund and are kept as-is, exactly
+	// as ListDebtors keeps them.
+	refundedByInv := map[int64]money.Cents{}
+	{
+		var invIDs []int64
+		seenInv := map[int64]bool{}
+		for _, rp := range raw {
+			if rp.invID.Valid && rp.invID.Int64 > 0 && !seenInv[rp.invID.Int64] {
+				seenInv[rp.invID.Int64] = true
+				invIDs = append(invIDs, rp.invID.Int64)
+			}
+		}
+		if len(invIDs) > 0 {
+			ph := strings.Repeat("?,", len(invIDs))
+			ph = ph[:len(ph)-1]
+			args := make([]any, len(invIDs))
+			for i, id := range invIDs {
+				args[i] = id
+			}
+			refRows, err := s.DB.Query(`SELECT InvoiceID,COALESCE(-SUM(Amount),0) FROM Payments
+				WHERE InvoiceID IN (`+ph+`) AND Amount<0 GROUP BY InvoiceID`, args...)
+			if err != nil {
+				return r, err
+			}
+			for refRows.Next() {
+				var id, refunded int64
+				if err := refRows.Scan(&id, &refunded); err != nil {
+					refRows.Close()
+					return r, err
+				}
+				refundedByInv[id] = money.Cents(refunded)
+			}
+			refRows.Close()
+			if err := refRows.Err(); err != nil {
+				return r, err
+			}
+		}
+	}
+	remainingRefund := map[int64]money.Cents{}
+	for id, v := range refundedByInv {
+		remainingRefund[id] = v
+	}
+	for _, rp := range raw {
+		if !rp.invID.Valid || rp.invID.Int64 <= 0 {
+			r.Payments = append(r.Payments, rp.row)
+			continue
+		}
+		net := rp.row.Amount
+		if left := remainingRefund[rp.invID.Int64]; left > 0 {
+			if left >= net {
+				remainingRefund[rp.invID.Int64] = left - net
+				net = 0
+			} else {
+				net -= left
+				remainingRefund[rp.invID.Int64] = 0
+			}
+		}
+		if net > 0 {
+			rp.row.Amount = net
+			r.Payments = append(r.Payments, rp.row)
+		}
+	}
+	return r, nil
 }
 
 // Return analysis is owned by B2 (domain_returns.go: GetReturnsAnalytics +
@@ -670,13 +983,20 @@ func (s *Store) Dashboard(ctx context.Context, user *auth.User) (AdminDashboard,
 	}
 	today := Today()
 	var sales sql.NullInt64
-	_ = s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0) FROM Invoices
-		WHERE IsCanceled=0 AND substr(InvoiceDate,1,10)=?`, today).Scan(&d.TodayInvoices, &sales)
+	// R22-E-F1: a failed SUM must surface instead of silently
+	// zeroing the dashboard totals (same `_ =` class as :722).
+	if err := sumScanErr(s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0) FROM Invoices
+		WHERE IsCanceled=0 AND substr(InvoiceDate,1,10)=?`, today).Scan(&d.TodayInvoices, &sales)); err != nil {
+		return d, err
+	}
 	d.TodaySales = money.Cents(sales.Int64)
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM Invoices WHERE IsCanceled=1 AND substr(COALESCE(CanceledAt,InvoiceDate),1,10)=?`, today).Scan(&d.TodayCanceled)
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM Shifts WHERE IsOpen=1`).Scan(&d.OpenShifts)
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM Products WHERE IsActive=1 AND Quantity<=MinQuantity`).Scan(&d.LowStockCount)
-	_ = s.DB.QueryRow(`SELECT COALESCE(SUM(RemainingAmount),0) FROM Invoices WHERE IsCanceled=0 AND RemainingAmount>0`).Scan(&sales)
+	// R22-E-F1: same `_ =` class as :722 — surface, never silent 0.00.
+	if err := sumScanErr(s.DB.QueryRow(`SELECT COALESCE(SUM(RemainingAmount),0) FROM Invoices WHERE IsCanceled=0 AND RemainingAmount>0`).Scan(&sales)); err != nil {
+		return d, err
+	}
 	d.TotalDebts = money.Cents(sales.Int64)
 	if n, err := s.UnreadAuditAlertsCount(ctx, user); err == nil {
 		d.UnreadAudit = n
@@ -731,14 +1051,21 @@ func (s *Store) Dashboard(ctx context.Context, user *auth.User) (AdminDashboard,
 		shiftRows.Close()
 		// Expected drawer AFTER closing the rows: opening a transaction
 		// while rows are open would deadlock on the single connection.
+		// R23-C-F1: a DrawerExpectedBalance error (e.g. the SQLite SUM
+		// overflowing on absurd CashBox rows) must surface, never be
+		// swallowed into a silent 0.00 ExpectedDrawer — the same
+		// silent-zero class R22-E-F1 eliminated for the SUMs above.
 		for i := range d.Shifts {
-			_ = s.Tx(ctx, func(tx *sql.Tx) error {
+			if err := s.Tx(ctx, func(tx *sql.Tx) error {
 				exp, err := DrawerExpectedBalance(tx, d.Shifts[i].ShiftID)
-				if err == nil {
-					d.Shifts[i].ExpectedDrawer = exp
+				if err != nil {
+					return err
 				}
+				d.Shifts[i].ExpectedDrawer = exp
 				return nil
-			})
+			}); err != nil {
+				return d, err
+			}
 		}
 	}
 	if audit, err := s.ListAuditLog(ctx, user, AuditFilter{Limit: 10}); err == nil {
@@ -812,14 +1139,19 @@ func (s *Store) ShiftMonitorFor(ctx context.Context, user *auth.User, from, to s
 		return m, err
 	}
 	// Expected drawer AFTER closing the rows (see Dashboard).
+	// R23-C-F1: propagate a DrawerExpectedBalance error instead of
+	// swallowing it into a silent 0.00 ExpectedDrawer.
 	for i := range m.OpenShifts {
-		_ = s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := s.Tx(ctx, func(tx *sql.Tx) error {
 			exp, err := DrawerExpectedBalance(tx, m.OpenShifts[i].ShiftID)
-			if err == nil {
-				m.OpenShifts[i].ExpectedDrawer = exp
+			if err != nil {
+				return err
 			}
+			m.OpenShifts[i].ExpectedDrawer = exp
 			return nil
-		})
+		}); err != nil {
+			return m, err
+		}
 	}
 	rows, err := s.DB.Query(`SELECT COALESCE(UserName,'') u, COUNT(*), COALESCE(SUM(NetAmount),0)
 		FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
@@ -856,9 +1188,16 @@ func (s *Store) ShiftMonitorFor(ctx context.Context, user *auth.User, from, to s
 			cRows.Close()
 			return m, err
 		}
-		if idx, ok := perfByUser[uname]; ok {
-			m.Performance[idx].CanceledCount = cnt
+		// FIX-12 SW-L06: a user who only canceled (no live sales)
+		// still gets a performance row — otherwise their cancels
+		// vanish from the monitor entirely.
+		idx, ok := perfByUser[uname]
+		if !ok {
+			m.Performance = append(m.Performance, CashierPerformance{UserName: uname})
+			idx = len(m.Performance) - 1
+			perfByUser[uname] = idx
 		}
+		m.Performance[idx].CanceledCount = cnt
 	}
 	cRows.Close()
 	if err := cRows.Err(); err != nil {
@@ -876,10 +1215,17 @@ func (s *Store) ShiftMonitorFor(ctx context.Context, user *auth.User, from, to s
 			rRows.Close()
 			return m, err
 		}
-		if idx, ok := perfByUser[uname]; ok {
-			m.Performance[idx].ReturnCount = cnt
-			m.Performance[idx].ReturnTotal = money.Cents(tot)
+		// FIX-12 SW-L06: a user who only performed returns (no live
+		// sales) still gets a performance row with their return
+		// counts attached — returns are attributed to the performer.
+		idx, ok := perfByUser[uname]
+		if !ok {
+			m.Performance = append(m.Performance, CashierPerformance{UserName: uname})
+			idx = len(m.Performance) - 1
+			perfByUser[uname] = idx
 		}
+		m.Performance[idx].ReturnCount = cnt
+		m.Performance[idx].ReturnTotal = money.Cents(tot)
 	}
 	rRows.Close()
 	return m, rRows.Err()

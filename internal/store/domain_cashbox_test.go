@@ -142,6 +142,31 @@ func TestCashCountAndReview(t *testing.T) {
 	}
 }
 
+func TestCashCountCrossUserDenialText(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	u := b2TestUser(t, s, "cash1", "cashier")
+	other := b2TestUser(t, s, "cash2", "cashier")
+	mgr := b2TestUser(t, s, "mgr1", "manager")
+	id, err := s.OpenShift(ctx, u, money.Cents(10000), false)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// FIX-18 R18-C1: cross-user count denial carries the uniform
+	// "غير مسموح — …" prefix so the handler maps it to 403.
+	_, err = s.RecordCashCount(ctx, other, id, money.Cents(10000), "", "")
+	if err == nil || !strings.HasPrefix(err.Error(), "غير مسموح — ") {
+		t.Fatalf("cross-user count: want the uniform denial prefix, got %v", err)
+	}
+	// Owner still counts; manager (view-all holder) may count too.
+	if _, err := s.RecordCashCount(ctx, u, id, money.Cents(10000), "", ""); err != nil {
+		t.Fatalf("own count: %v", err)
+	}
+	if _, err := s.RecordCashCount(ctx, mgr, id, money.Cents(10000), "", ""); err != nil {
+		t.Fatalf("manager count on another shift: %v", err)
+	}
+}
+
 func TestCashCountBalancedCannotBeRejected(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

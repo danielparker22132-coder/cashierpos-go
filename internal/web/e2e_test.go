@@ -654,9 +654,14 @@ func TestE2E_WarehouseCannotCreateInvoice(t *testing.T) {
 	if code != http.StatusForbidden || body["ok"] != false {
 		t.Fatalf("warehouse create invoice: want 403 ok=false, got %d body=%v", code, body)
 	}
+	// FIX-17 SW2-L10 (§15 row 25): warehouse now reads the invoice list
+	// (read-only, no POS form) — it still cannot CREATE (403 above).
 	code, html := e.get(wh, "/sales")
-	if code != http.StatusForbidden {
-		t.Fatalf("warehouse GET /sales: want 403, got %d body=%q", code, truncate(html, 200))
+	if code != http.StatusOK {
+		t.Fatalf("warehouse GET /sales: want 200 (read-only list), got %d body=%q", code, truncate(html, 200))
+	}
+	if !strings.Contains(html, "فواتير اليوم") || strings.Contains(html, "فاتورة جديدة") {
+		t.Fatalf("warehouse GET /sales: want read-only invoice list, got body=%q", truncate(html, 300))
 	}
 	// Warehouse CAN view products and count stocktake (positive control).
 	code, _ = e.get(wh, "/products")

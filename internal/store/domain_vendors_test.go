@@ -230,9 +230,10 @@ func TestPayVendorRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Vendor balance is now 100 EGP.
-	// Over-balance refused.
+	// Over-balance refused (balance + 0.02 — the 1-qirsh tolerance in
+	// FIX-12 SW-L01 allows balance + 0.01 only).
 	mustErr(t, func() error {
-		_, err := s.PayVendor(ctx, admin, vid, 0, money.Cents(10001), "Visa", "")
+		_, err := s.PayVendor(ctx, admin, vid, 0, money.Cents(10002), "Visa", "")
 		return err
 	}(), "pay over vendor balance")
 	// Zero refused.

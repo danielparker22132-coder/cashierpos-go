@@ -67,7 +67,8 @@ type NotificationInput struct {
 	LinkedProductID int64
 	Audience        string
 	SendAt          string // "" = send now; otherwise "2006-01-02 15:04:05"
-	EventKey        string // "" = no dedupe (custom one-off)
+	EventKey        string // "" = auto-generated unique key "<type>:<definition id>";
+	// an explicit key enables cross-definition dedupe for that key
 }
 
 // NotificationSetting is one per-user per-type toggle.
@@ -84,7 +85,15 @@ type SendLogEntry struct {
 	UserName       string
 	EventKey       string
 	SentAt         string
+	Status         string // sent | skipped_disabled | skipped_duplicate
 }
+
+// Send-log statuses (FIX-12 SW-M13): a skip is never silent.
+const (
+	SendStatusSent             = "sent"
+	SendStatusSkippedDisabled  = "skipped_disabled"
+	SendStatusSkippedDuplicate = "skipped_duplicate"
+)
 
 // validRole reports whether role is one of the five known roles.
 func validRole(role string) bool {
@@ -190,14 +199,11 @@ func audienceRecipients(tx *sql.Tx, audience string) ([]string, error) {
 // Call inside the same Tx right after delivery when sent == 0: a 'sent'
 // row with zero recipients would be listed by ListNotificationsAdmin as
 // a delivered notification (PR-L2). Safe for dedupe: dedupe lives in
-// NotificationSendLog UNIQUE(UserName, EventKey), not in the definition
-// row — and sent == 0 implies zero new log rows were written for this
-// definition (every counted send writes exactly one log row first), so
-// nothing references it, while pre-existing log rows (same event key,
-// older definition) keep blocking re-fires. Conversely, when sent == 0
-// because the audience was empty or every recipient had the type
-// disabled, no log row exists, so a later trigger with the same event
-// key correctly fires once an audience appears or the setting is back on.
+// NotificationSendLog UNIQUE(UserName, EventKey) on the real event key,
+// not in the definition row — and skip rows (FIX-12 SW-M13) use synthetic
+// event keys, so they never block a re-fire either. A dropped definition
+// may still own skip rows; they stay as the audit trail of the attempt
+// and keep its NotificationID.
 func dropEmptyDefinitionTx(tx *sql.Tx, defID int64) error {
 	_, err := tx.Exec(`DELETE FROM Notifications WHERE NotificationID=? AND UserName=''`, defID)
 	return err
@@ -235,11 +241,30 @@ func userNotifEnabled(tx *sql.Tx, userName, notifType string) (bool, error) {
 	return enabled == 1, nil
 }
 
+// insertSkipLogTx records a skipped delivery (FIX-12 SW-M13). The row uses
+// a synthetic event key (real key + reason + definition id) so it can never
+// collide with — or block — the real (UserName, EventKey) dedupe slot: a
+// later re-fire with the same real key must still deliver once the
+// recipient re-enables the type or the duplicate is genuinely new.
+func insertSkipLogTx(tx *sql.Tx, defID int64, userName, eventKey, status string) error {
+	key := eventKey
+	if key == "" {
+		key = "none"
+	}
+	key = fmt.Sprintf("%s:skipped:%s:%d", key, status, defID)
+	_, err := tx.Exec(`INSERT OR IGNORE INTO NotificationSendLog
+		(NotificationID,UserName,EventKey,SentAt,Status) VALUES(?,?,?,?,?)`,
+		defID, userName, key, Now(), status)
+	return err
+}
+
 // deliverNotificationTx delivers an already-stored definition row (id) to its
 // audience: one Notifications row per recipient, one NotificationSendLog row
 // per (recipient, eventKey). Recipients with the type disabled in their
-// settings are skipped; an existing send-log row for (user, eventKey)
-// skips that user (dedupe). Returns the number of recipients actually sent.
+// settings are skipped, but the skip is logged as skipped_disabled; an
+// existing send-log row for (user, eventKey) skips that user (dedupe) and
+// the skip is logged as skipped_duplicate. Returns the number of recipients
+// actually sent.
 func deliverNotificationTx(tx *sql.Tx, defID int64, notifType, title, body string, productID int64, audience, eventKey string) (int, error) {
 	recipients, err := audienceRecipients(tx, audience)
 	if err != nil {
@@ -252,22 +277,28 @@ func deliverNotificationTx(tx *sql.Tx, defID int64, notifType, title, body strin
 			return sent, err
 		}
 		if !enabled {
+			if err := insertSkipLogTx(tx, defID, name, eventKey, SendStatusSkippedDisabled); err != nil {
+				return sent, err
+			}
 			continue
 		}
 		if eventKey != "" {
 			res, err := tx.Exec(`INSERT OR IGNORE INTO NotificationSendLog
-				(NotificationID,UserName,EventKey,SentAt) VALUES(?,?,?,?)`,
+				(NotificationID,UserName,EventKey,SentAt,Status) VALUES(?,?,?,?,'sent')`,
 				defID, name, eventKey, Now())
 			if err != nil {
 				return sent, err
 			}
 			n, _ := res.RowsAffected()
 			if n == 0 {
+				if err := insertSkipLogTx(tx, defID, name, eventKey, SendStatusSkippedDuplicate); err != nil {
+					return sent, err
+				}
 				continue // duplicate (user + event) — already sent
 			}
 		} else {
 			if _, err := tx.Exec(`INSERT INTO NotificationSendLog
-				(NotificationID,UserName,EventKey,SentAt) VALUES(?,?,?,?)`,
+				(NotificationID,UserName,EventKey,SentAt,Status) VALUES(?,?,?,?,'sent')`,
 				defID, name, "", Now()); err != nil {
 				return sent, err
 			}
@@ -297,6 +328,14 @@ func (s *Store) CreateNotification(ctx context.Context, user *auth.User, in Noti
 	in.Title = strings.TrimSpace(in.Title)
 	if in.Title == "" {
 		return 0, errors.New("عنوان التنبيه مطلوب")
+	}
+	// FIX-12 SW-L11: price_drop / offer require a linked product.
+	if (in.Type == NotifPriceDrop || in.Type == NotifOffer) && in.LinkedProductID <= 0 {
+		return 0, errors.New("المنتج المرتبط مطلوب لتنبيهات انخفاض السعر والعروض")
+	}
+	// FIX-12 SW-L12: a custom notification requires a non-empty body.
+	if in.Type == NotifCustom && strings.TrimSpace(in.Body) == "" {
+		return 0, errors.New("نص التنبيه مطلوب للتنبيهات المخصصة")
 	}
 	if in.Audience == "" {
 		in.Audience = "all"
@@ -330,7 +369,11 @@ func (s *Store) CreateNotification(ctx context.Context, user *auth.User, in Noti
 		}
 		if status == "sent" {
 			eventKey := in.EventKey
-			if eventKey == "" && in.Type != NotifCustom {
+			// FIX-12 SW-H11: auto-generate a key for custom notifications
+			// too — the form's optional event_key means "no dedup", and
+			// an empty key used to collide on UNIQUE(UserName, EventKey)
+			// from the second custom notification on.
+			if eventKey == "" {
 				eventKey = fmt.Sprintf("%s:%d", in.Type, defID)
 			}
 			sent, err := deliverNotificationTx(tx, defID, in.Type, in.Title, in.Body, in.LinkedProductID, in.Audience, eventKey)
@@ -368,6 +411,13 @@ func (s *Store) UpdateNotification(ctx context.Context, user *auth.User, id int6
 	in.Title = strings.TrimSpace(in.Title)
 	if in.Title == "" {
 		return errors.New("عنوان التنبيه مطلوب")
+	}
+	// FIX-12 SW-L11 / SW-L12: same validation as CreateNotification.
+	if (in.Type == NotifPriceDrop || in.Type == NotifOffer) && in.LinkedProductID <= 0 {
+		return errors.New("المنتج المرتبط مطلوب لتنبيهات انخفاض السعر والعروض")
+	}
+	if in.Type == NotifCustom && strings.TrimSpace(in.Body) == "" {
+		return errors.New("نص التنبيه مطلوب للتنبيهات المخصصة")
 	}
 	if in.Audience == "" {
 		in.Audience = "all"
@@ -636,8 +686,8 @@ func (s *Store) ListSendLog(ctx context.Context, user *auth.User, notificationID
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.DB.Query(`SELECT LogID,NotificationID,UserName,EventKey,SentAt
-		FROM NotificationSendLog WHERE NotificationID=? ORDER BY LogID DESC LIMIT ?`, notificationID, limit)
+	rows, err := s.DB.Query(`SELECT LogID,NotificationID,UserName,EventKey,SentAt,
+		COALESCE(Status,'sent') FROM NotificationSendLog WHERE NotificationID=? ORDER BY LogID DESC LIMIT ?`, notificationID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -645,7 +695,7 @@ func (s *Store) ListSendLog(ctx context.Context, user *auth.User, notificationID
 	var out []SendLogEntry
 	for rows.Next() {
 		var e SendLogEntry
-		if err := rows.Scan(&e.ID, &e.NotificationID, &e.UserName, &e.EventKey, &e.SentAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.NotificationID, &e.UserName, &e.EventKey, &e.SentAt, &e.Status); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -808,15 +858,23 @@ func (s *Store) NotifyLowStock(ctx context.Context, actor *auth.User, productID 
 				return err
 			}
 			if !enabled {
+				// FIX-12 SW-M13: a disabled-type skip leaves a log row.
+				if err := insertSkipLogTx(tx, defID, name, eventKey, SendStatusSkippedDisabled); err != nil {
+					return err
+				}
 				continue
 			}
 			res, err := tx.Exec(`INSERT OR IGNORE INTO NotificationSendLog
-				(NotificationID,UserName,EventKey,SentAt) VALUES(?,?,?,?)`, defID, name, eventKey, Now())
+				(NotificationID,UserName,EventKey,SentAt,Status) VALUES(?,?,?,?,'sent')`, defID, name, eventKey, Now())
 			if err != nil {
 				return err
 			}
 			n, _ := res.RowsAffected()
 			if n == 0 {
+				// FIX-12 SW-M13: a duplicate re-dispatch leaves a log row.
+				if err := insertSkipLogTx(tx, defID, name, eventKey, SendStatusSkippedDuplicate); err != nil {
+					return err
+				}
 				continue
 			}
 			if _, err := tx.Exec(`INSERT INTO Notifications

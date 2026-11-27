@@ -84,10 +84,11 @@ func TestFix3_DuplicateLinesMergeHTTP(t *testing.T) {
 	}
 }
 
-// TestFix3_BelowCostPermissionHTTP (FIX-3 H2): the preview refuses a
-// cashier's below-cost confirmation with 403, allows a supervisor's,
-// and the sales form only shows the checkbox to roles that hold
-// approve_below_cost.
+// TestFix3_BelowCostPermissionHTTP (FIX-3 H2, amended by FIX-12 SW-M10 +
+// SW-L08): the preview refuses a cashier's AND a supervisor's below-cost
+// confirmation with 403 (§15 row 17: supervisor ❌), service-layer
+// denials map to 403, and the sales form only shows the checkbox to
+// roles that hold approve_below_cost (admin/manager only).
 func TestFix3_BelowCostPermissionHTTP(t *testing.T) {
 	e := readyEnv(t, false)
 	admin := e.adminClient()
@@ -119,22 +120,31 @@ func TestFix3_BelowCostPermissionHTTP(t *testing.T) {
 	if code, data := e.postJSON(cash, "/api/sales/preview", body); code != http.StatusForbidden {
 		t.Fatalf("cashier preview with allow_below_cost: want 403, got %d %v", code, data)
 	}
-	// Cashier: refused from the real sale endpoint too (the create
-	// endpoint maps store errors to 400, so assert 400 + the
-	// permission message rather than 403).
-	if code, data := e.sell(cash, body); code != http.StatusBadRequest {
-		t.Fatalf("cashier sale with allow_below_cost: want 400, got %d %v", code, data)
+	// Cashier: refused from the real sale endpoint too (FIX-12 SW-L08:
+	// service-layer denials map to 403, not 400).
+	if code, data := e.sell(cash, body); code != http.StatusForbidden {
+		t.Fatalf("cashier sale with allow_below_cost: want 403, got %d %v", code, data)
 	} else if msg, _ := data["error"].(string); !strings.Contains(msg, "غير مسموح") {
 		t.Fatalf("cashier sale error = %q, want a permission refusal", msg)
 	}
-	// Supervisor: preview OK, sale posts.
-	if code, data := e.postJSON(sup, "/api/sales/preview", body); code != http.StatusOK || data["ok"] != true {
-		t.Fatalf("supervisor preview with allow_below_cost: want 200 ok, got %d %v", code, data)
+	// Supervisor: refused too (FIX-12 SW-M10, §15 row 17) — preview and
+	// sale both 403, no invoice created.
+	if code, data := e.postJSON(sup, "/api/sales/preview", body); code != http.StatusForbidden {
+		t.Fatalf("supervisor preview with allow_below_cost: want 403, got %d %v", code, data)
 	}
-	if code, data := e.sell(sup, body); code != http.StatusOK || data["ok"] != true {
-		t.Fatalf("supervisor sale with allow_below_cost: want 200 ok, got %d %v", code, data)
+	if code, data := e.sell(sup, body); code != http.StatusForbidden {
+		t.Fatalf("supervisor sale with allow_below_cost: want 403, got %d %v", code, data)
+	} else if msg, _ := data["error"].(string); !strings.Contains(msg, "غير مسموح") {
+		t.Fatalf("supervisor sale error = %q, want a permission refusal", msg)
 	}
-	// Form: no checkbox for the cashier, checkbox for the supervisor.
+	// Admin: preview OK, sale posts (admin still holds the permission).
+	if code, data := e.postJSON(admin, "/api/sales/preview", body); code != http.StatusOK || data["ok"] != true {
+		t.Fatalf("admin preview with allow_below_cost: want 200 ok, got %d %v", code, data)
+	}
+	if code, data := e.sell(admin, body); code != http.StatusOK || data["ok"] != true {
+		t.Fatalf("admin sale with allow_below_cost: want 200 ok, got %d %v", code, data)
+	}
+	// Form: no checkbox for the cashier, none for the supervisor either.
 	if code, html := e.get(cash, "/sales"); code != http.StatusOK {
 		t.Fatalf("cashier /sales: want 200, got %d", code)
 	} else if strings.Contains(html, `name="allow_below_cost"`) {
@@ -142,7 +152,7 @@ func TestFix3_BelowCostPermissionHTTP(t *testing.T) {
 	}
 	if code, html := e.get(sup, "/sales"); code != http.StatusOK {
 		t.Fatalf("supervisor /sales: want 200, got %d", code)
-	} else if !strings.Contains(html, `name="allow_below_cost"`) {
-		t.Fatal("supervisor sales form must show the below-cost checkbox")
+	} else if strings.Contains(html, `name="allow_below_cost"`) {
+		t.Fatal("supervisor sales form must not show the below-cost checkbox")
 	}
 }

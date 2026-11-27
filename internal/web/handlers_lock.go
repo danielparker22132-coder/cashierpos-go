@@ -2,8 +2,11 @@
 //
 // Rules (from the PyQt reference, app/main.py check_lock/_do_lock):
 //   - Setting "auto_lock_minutes" (global, default 15, 0 = disabled) and a
-//     per-user override "auto_lock_minutes:<username>" that wins over the
-//     global value. Both are read through the store settings helpers.
+//     per-user override "auto_lock_minutes:<username>". Precedence
+//     (FIX-17 SW2-L07, FEATURE_MAP L-14): a global value > 0 wins for
+//     everyone; global 0 -> the user's own value; per-user NULL -> 15;
+//     per-user 0 -> never lock. Both are read through the store
+//     settings helpers.
 //   - Middleware tracks the last activity of every session; an authenticated
 //     request whose idle time reached the effective timeout is redirected
 //     to /lock?next=<original URL>. Locking is NOT a logout: the session,
@@ -105,10 +108,14 @@ func (s *Server) lockLastSeen(token string) (time.Time, bool) {
 // perUserLockKey is the AppSettings key holding one user's override.
 func perUserLockKey(username string) string { return "auto_lock_minutes:" + username }
 
-// effectiveAutoLockMinutes returns the timeout in minutes for this user:
-// the per-user override wins when present and valid (0-600, 0 = disabled
-// for that user); otherwise the global setting (default 15, 0 = disabled).
+// effectiveAutoLockMinutes returns the timeout in minutes for this user
+// (FIX-17 SW2-L07, FEATURE_MAP L-14): a global value > 0 wins for
+// everyone; global 0 -> the user's own value (0-600, 0 = never lock);
+// a missing or invalid per-user value -> the 15-minute default.
 func (s *Server) effectiveAutoLockMinutes(u *auth.User) int {
+	if g := s.Store.GetAutoLockMinutes(); g > 0 {
+		return g
+	}
 	if u != nil {
 		if raw := strings.TrimSpace(s.Store.GetSetting(perUserLockKey(u.UserName))); raw != "" {
 			if v, err := strconv.Atoi(raw); err == nil && v >= 0 && v <= 600 {
@@ -116,7 +123,7 @@ func (s *Server) effectiveAutoLockMinutes(u *auth.User) int {
 			}
 		}
 	}
-	return s.Store.GetAutoLockMinutes()
+	return 15
 }
 
 // lockExempt reports whether a path bypasses the idle check: the lock page
@@ -131,6 +138,34 @@ func lockExempt(path string) bool {
 	return strings.HasPrefix(path, "/static/")
 }
 
+// lockNoRefresh reports whether an authenticated request must NOT
+// refresh the idle clock: pure background polls. The web bell polls
+// GET /api/staff/orders/pending-count and /pending-evidence every 5 s
+// on every logged-in page (layout.html); if those hits counted as
+// activity, the timeout could never elapse while a page is open and
+// the auto-lock would be dead in real browser use (FIX-11). A poll
+// still goes through the expiry check in autoLock, so a locked session
+// gets 423 from it — the poll never resurrects an expired session.
+// Everything else that reaches the middleware is real activity: the
+// /api/activity heartbeat fires only on mouse/key events, and the
+// sales preview / barcode lookups are user-initiated.
+// FIX-12 L2: the path is normalised (trailing slashes stripped,
+// case-folded) before matching — autoLock refreshes before the mux
+// routes, so a trailing-slash or upper-case variant of a bell path
+// used to refresh the clock even though the mux then 404s it. The
+// method is deliberately NOT checked: a POST to a bell path is not a
+// real route either (this tree answers 404 for it) and must not
+// refresh the clock.
+// FIX-13 I1: TrimSuffix stripped exactly ONE trailing slash, so a
+// double-slash variant (…/pending-count//) still refreshed the
+// clock. TrimRight strips every trailing slash, so any number of
+// them normalises to the exact bell path.
+func lockNoRefresh(path string) bool {
+	p := strings.ToLower(strings.TrimRight(path, "/"))
+	return p == "/api/staff/orders/pending-count" ||
+		p == "/api/staff/orders/pending-evidence"
+}
+
 // sessionToken returns the session cookie value, or "".
 func sessionToken(r *http.Request) string {
 	if c, err := r.Cookie("cashierpos_session"); err == nil {
@@ -143,7 +178,9 @@ func sessionToken(r *http.Request) string {
 // CurrentUser is set) and before the mux. Every authenticated request
 // refreshes the session's last-activity stamp — except when the session
 // is already idle-expired, in which case the request is sent to /lock
-// with ?next= preserved. Anonymous requests pass through (RequireLogin
+// with ?next= preserved, and except pure background polls (lockNoRefresh:
+// the web-bell 5 s poll), which go through the expiry check but never
+// refresh the stamp. Anonymous requests pass through (RequireLogin
 // handles them).
 func (s *Server) autoLock(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,11 +209,21 @@ func (s *Server) autoLock(next http.Handler) http.Handler {
 		if minutes > 0 && now.Sub(last) >= time.Duration(minutes)*time.Minute {
 			// Idle-expired: locked. Do NOT refresh the stamp, so leaving
 			// the lock page re-shows the lock on the next request.
-			if strings.HasPrefix(r.URL.Path, "/api/") {
+			// FIX-17 SW2-L06: case-fold the /api/ prefix check, like
+			// lockNoRefresh does — a locked upper-case bell path
+			// (/API/STAFF/...) is an API call (423 JSON), not a page.
+			if strings.HasPrefix(strings.ToLower(r.URL.Path), "/api/") {
 				writeJSON(w, 423, map[string]any{"ok": false, "error": "الجلسة مقفلة بسبب الخمول — أدخل كلمة السر لفتحها", "locked": true})
 				return
 			}
 			http.Redirect(w, r, "/lock?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+			return
+		}
+		if lockNoRefresh(r.URL.Path) {
+			// Pure background poll (FIX-11): answer without touching
+			// the idle clock. The expiry check above already ran, so
+			// a locked session got 423 and never reaches here.
+			next.ServeHTTP(w, r)
 			return
 		}
 		// Active request: refresh the in-memory stamp, and persist it to
@@ -389,7 +436,7 @@ func (s *Server) handleLockSettingsSave(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := s.Store.SetSetting(perUserLockKey(clearUser), ""); err != nil {
-			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: err.Error(), Data: data})
+			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: safeHTMLErr(err), Data: data})
 			return
 		}
 		_ = s.Store.Audit(u.ID, u.UserName, "clear_auto_lock_override", "settings", nil, 0, 0, "",
@@ -430,26 +477,28 @@ func (s *Server) handleLockSettingsSave(w http.ResponseWriter, r *http.Request) 
 			if err != nil || gv < 0 || gv > 600 {
 				data := s.lockSettingsDataFor(u)
 				data.OwnMinutes = ownRaw
-				_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: "المدة العامة بين 0 (معطل) و 600 دقيقة", Data: data})
+				_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: "المدة العامة بين 0 (بلا مدة عامة) و 600 دقيقة", Data: data})
 				return
 			}
 			globalVal = &gv
 		}
 	}
-	// Per-user value: empty = inherit the global value (stored as "" so
-	// the reader falls back); otherwise 0-600 minutes (0 = disabled for me).
+	// Per-user value: empty = no override (the reader falls back to the
+	// 15-minute default when the global value is 0); otherwise 0-600
+	// minutes (0 = never lock for me, only when the global value is 0 —
+	// FIX-17 SW2-L07, global > 0 wins for everyone).
 	if ownVal == nil {
 		if err := s.Store.SetSetting(perUserLockKey(u.UserName), ""); err != nil {
 			data := s.lockSettingsDataFor(u)
 			data.OwnMinutes = ownRaw
-			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: err.Error(), Data: data})
+			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: safeHTMLErr(err), Data: data})
 			return
 		}
 	} else {
 		if err := s.Store.SetSetting(perUserLockKey(u.UserName), strconv.Itoa(*ownVal)); err != nil {
 			data := s.lockSettingsDataFor(u)
 			data.OwnMinutes = ownRaw
-			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: err.Error(), Data: data})
+			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: safeHTMLErr(err), Data: data})
 			return
 		}
 	}
@@ -457,11 +506,20 @@ func (s *Server) handleLockSettingsSave(w http.ResponseWriter, r *http.Request) 
 		if err := s.Store.SaveAutoLockMinutes(r.Context(), u, *globalVal); err != nil {
 			data := s.lockSettingsDataFor(u)
 			data.OwnMinutes = ownRaw
-			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: err.Error(), Data: data})
+			_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Error: safeHTMLErr(err), Data: data})
 			return
 		}
 	}
 	_ = s.Store.Audit(u.ID, u.UserName, "save_auto_lock_self", "settings", nil, 0, 0, "",
 		"حفظ إعداد القفل التلقائي للمستخدم "+u.UserName)
-	_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Notice: "تم حفظ إعدادات القفل التلقائي", Data: s.lockSettingsDataFor(u)})
+	// FIX-12 SW-L09: the notice must only claim what was actually
+	// saved. A caller without PermAccessSettings cannot change the
+	// global value (globalVal stays nil above), so the generic
+	// "تم حفظ إعدادات القفل التلقائي" would falsely claim the global
+	// value was saved for them — they only saved their own override.
+	notice := "تم حفظ إعدادات القفل التلقائي"
+	if !canGlobal {
+		notice = "تم حفظ إعداد القفل التلقائي الخاص بك"
+	}
+	_ = s.render(w, r, "autolock_settings.html", Page{Title: "إعدادات القفل التلقائي", Notice: notice, Data: s.lockSettingsDataFor(u)})
 }

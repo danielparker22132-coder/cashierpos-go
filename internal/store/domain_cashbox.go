@@ -53,6 +53,23 @@ func cashBoxMoveTx(tx *sql.Tx, user *auth.User, shiftID int64, kind string, amou
 	if strings.TrimSpace(reason) == "" {
 		return 0, errors.New("يجب إدخال سبب")
 	}
+	// R23-D-F1: magnitude cap on manual 'in'. A manager could type
+	// any positive int64 amount and it was stored verbatim; two 2^62
+	// 'in' rows then wrapped CashIn to MinInt64 in shiftSummaryTx
+	// and close persisted the wrapped negative as متوازن — the exact
+	// falsified-record outcome the R22-E-F2 opening cap eliminated.
+	// The cap is money.MaxOpeningCents (100,000,000 EGP), the same
+	// bound as the opening: no legitimate drawer movement reaches
+	// it, and it sits ~9 orders of magnitude inside int64. The cap
+	// lives here, the single funnel for both entry points (HTML form
+	// POST /cashbox/in and API POST /api/cashbox/in both end in
+	// CashBoxIn → cashBoxMoveTx). Automatic 'in' rows (sales,
+	// collections, courier) are direct INSERTs elsewhere and never
+	// pass through here, so no legitimate flow is affected. The
+	// 'out' branch needs no cap: it is drawer-gated below.
+	if kind == "in" && amount > money.MaxOpeningCents {
+		return 0, money.ErrOverflow
+	}
 	if kind == "out" {
 		// Discretionary withdrawal: refused when it would take the
 		// drawer below zero (RequireDrawerBalance — exact balance
@@ -240,7 +257,10 @@ func (s *Store) RecordCashCount(ctx context.Context, user *auth.User, shiftID in
 			return err
 		}
 		if sh.UserID != user.ID && !rbac.Can(user.Role, rbac.PermViewAllCashBox) {
-			return errors.New("لا يمكن عدّ درج مستخدم آخر")
+			// FIX-18 R18-C1: uniform denial prefix (غير مسموح — …) so
+			// apiErrForService maps this cross-user denial to 403,
+			// the same L09 recipe as ListCashCounts (FIX-17).
+			return errors.New("غير مسموح — لا يمكن عدّ درج مستخدم آخر")
 		}
 		if !sh.IsOpen {
 			return errors.New("لا يمكن عدّ درج شيفت مغلق")
@@ -333,7 +353,11 @@ func countOwnerRoleTx(tx *sql.Tx, countedBy string, countedByUserID int64) (stri
 // it goes through the normal approval path and is audited as a normal
 // approval (approve/reject audit row + approvals log entry, owner ==
 // approver), exactly like any other approval.
-var ErrSelfReview = errors.New("لا يمكنك اعتماد عدّك الخاص — يجب أن يعتمده مستخدم آخر")
+// FIX-13 I2: the text carries the uniform denial prefix
+// ("غير مسموح — …") like every other permission denial, while
+// keeping the specific reason — a client keying denial detection
+// on the uniform prefix must not miss this gate.
+var ErrSelfReview = errors.New("غير مسموح — لا يمكنك اعتماد عدّك الخاص، يجب أن يعتمده مستخدم آخر")
 
 // ReviewCashCount reviews a cash count (Manager/Admin, plus — PEER APPROVAL,
 // jony 2026-11-25 — a Cashier reviewing ANOTHER cashier's count;
@@ -466,7 +490,10 @@ func (s *Store) ListCashCounts(ctx context.Context, user *auth.User, shiftID int
 		return nil, err
 	}
 	if sh.UserID != user.ID && !rbac.Can(user.Role, rbac.PermViewAllCashBox) {
-		return nil, errors.New("لا يمكن عرض عدّ درج مستخدم آخر")
+		// FIX-17 SW2-L09: uniform denial prefix (غير مسموح — …) so
+		// apiErrForService maps this cross-user denial to 403, like
+		// every other SW-L08-family denial. The specific reason is kept.
+		return nil, errors.New("غير مسموح — لا يمكن عرض عدّ درج مستخدم آخر")
 	}
 	rows, err := s.DB.Query(`SELECT CountID,ShiftID,CountedBy,CountedAt,AmountCounted,ExpectedAmount,
 		Difference,Denominations,Notes,ReviewStatus,ReviewedBy,ReviewedAt,ReviewNote

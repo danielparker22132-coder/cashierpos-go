@@ -165,6 +165,9 @@ func TestB1ProductUpdateSearchLowExpiring(t *testing.T) {
 		t.Fatalf("low stock after adjust: %+v", low)
 	}
 	// Expiring: set expiry 5 days ahead (alert 30 days).
+	// FIX-12 SW-L04: expiry alerts cover tracked products only, so the
+	// fixture must be tracked for this section to exercise the alert.
+	upd.IsExpiryTracked = true
 	upd.ExpiryDate = "2999-01-01"
 	upd.Quantity = 4000
 	if _, err := s.UpdateProduct(ctx, admin, p.ID, upd); err != nil {

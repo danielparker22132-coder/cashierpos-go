@@ -6,8 +6,20 @@
   <a class="btn" href="/payables">المستحقات اليدوية</a>
 </p>
 {{if .Data.Alerts}}
+{{/* FIX-15 R15-M1: the per-invoice amount in each due alert
+   ({{egp .Remaining}}) is gated on canViewProfit — for a
+   single-purchase vendor it IS the invoice total, so it leaks the unit
+   price by division with the Qty on the purchase detail page. Roles
+   without view_profit see vendor + due date only.
+   FIX-16 R16-M1: the vendor-level CurrentBalance column below is
+   gated on canViewVendorMoney (view_profit OR pay_vendors) for the
+   same reason — for a single-purchase vendor the column IS the
+   invoice total. Warehouse holds neither permission and sees no
+   balance; cashier (pay_vendors) still sees it — it is the amount
+   owed. حد الائتمان stays visible to every role: it is an admin-set
+   limit, not a purchase total. */}}
 <div class="alert warn" role="alert">{{template "icon-alert"}} يوجد {{len .Data.Alerts}} مورد له مستحقات قريبة (خلال 30 يوماً أو متأخرة):
-  {{range .Data.Alerts}}{{.VendorName}} (يستحق {{.DueDate}} — {{egp .Remaining}}) · {{end}}
+  {{range .Data.Alerts}}{{.VendorName}} (يستحق {{.DueDate}}{{if index $.Data "canViewProfit"}} — {{egp .Remaining}}{{end}}) · {{end}}
 </div>
 {{end}}
 <form method="get" action="/vendors" class="form inline">
@@ -15,19 +27,19 @@
   <button type="submit">بحث</button>
 </form>
 <table>
-  <thead><tr><th>الاسم</th><th>الهاتف</th><th>الرصيد الحالي</th><th>حد الائتمان</th><th>الحالة</th><th></th></tr></thead>
+  <thead><tr><th>الاسم</th><th>الهاتف</th>{{if index .Data "canViewVendorMoney"}}<th>الرصيد الحالي</th>{{end}}<th>حد الائتمان</th><th>الحالة</th><th></th></tr></thead>
   <tbody>
   {{range .Data.Vendors}}
     <tr>
       <td><a href="/vendors/{{.ID}}">{{.Name}}</a></td>
       <td class="num">{{.Phone}}</td>
-      <td class="num">{{egp .CurrentBalance}}</td>
+      {{if index $.Data "canViewVendorMoney"}}<td class="num">{{egp .CurrentBalance}}</td>{{end}}
       <td class="num">{{egp .CreditLimit}}</td>
       <td>{{if .IsActive}}نشط{{else}}موقوف{{end}}</td>
       <td><a href="/vendors/{{.ID}}/edit">تعديل</a> · <a href="/vendors/{{.ID}}/ledger">دفتر الأستاذ</a></td>
     </tr>
   {{else}}
-    <tr><td colspan="6">لا يوجد موردون مطابقون</td></tr>
+    <tr><td colspan="{{if index .Data "canViewVendorMoney"}}6{{else}}5{{end}}">لا يوجد موردون مطابقون</td></tr>
   {{end}}
   </tbody>
 </table>

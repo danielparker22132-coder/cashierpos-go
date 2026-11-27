@@ -588,7 +588,7 @@ func (s *Store) ExpiringProducts(ctx context.Context, user *auth.User) ([]*Produ
 		return nil, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+productColumns+` FROM Products
-		WHERE IsActive=1 AND ExpiryDate IS NOT NULL AND ExpiryDate<>''
+		WHERE IsActive=1 AND IsExpiryTracked=1 AND ExpiryDate IS NOT NULL AND ExpiryDate<>''
 		AND ExpiryDate<=date(?, '+' || ExpiryAlertDays || ' days')
 		ORDER BY ExpiryDate`, Today())
 	if err != nil {
@@ -644,7 +644,10 @@ func (s *Store) AddStock(ctx context.Context, user *auth.User, productID int64, 
 		if !p.IsActive {
 			return errors.New("المنتج غير موجود")
 		}
-		newQty := p.Quantity + qty
+		newQty, err := money.AddQtyChecked(p.Quantity, qty)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`UPDATE Products SET Quantity=? WHERE ProductID=?`, int64(newQty), productID); err != nil {
 			return err
 		}
@@ -683,6 +686,12 @@ func (s *Store) AdjustStock(ctx context.Context, user *auth.User, productID int6
 			return errors.New("المنتج غير موجود")
 		}
 		diff := newQty - p.Quantity
+		// FIX-12 SW-L05: zero-difference adjust is a no-op — write no
+		// movement row and no audit row, mirroring ApproveStocktake
+		// which skips delta-0 lines. Quantity is already newQty.
+		if diff == 0 {
+			return nil
+		}
 		absDiff := diff
 		if absDiff < 0 {
 			absDiff = -absDiff
@@ -930,20 +939,38 @@ func (s *Store) DecodeScaleBarcode(ctx context.Context, code string) (*ScaleDeco
 		// value is the total price in EGP with ValueDecimalPlaces decimals.
 		// FIX-1 L3: round instead of truncating (valueNum*100/divisor
 		// dropped up to 0.99 of a qirsh).
-		totalCents := money.Cents((valueNum*100 + divisor/2) / divisor)
+		totalCents64, err := money.MulDivRound(valueNum, 100, divisor)
+		if err != nil {
+			return nil, err
+		}
+		totalCents := money.Cents(totalCents64)
 		dec.TotalPrice = totalCents
 		// weight (milli-kg) = total / pricePerKg, rounded.
-		dec.Weight = money.Qty((int64(totalCents)*1000 + int64(pricePerKg)/2) / int64(pricePerKg))
+		weight64, err := money.MulDivRound(int64(totalCents), 1000, int64(pricePerKg))
+		if err != nil {
+			return nil, err
+		}
+		dec.Weight = money.Qty(weight64)
 	} else {
 		// value is the weight; divisor gives kg with 3 decimals -> milli-kg.
 		// FIX-2 L-5: round instead of truncating, as in the
 		// PriceEmbedded branch above.
-		weightMilli := (valueNum*1000 + divisor/2) / divisor
+		weightMilli, err := money.MulDivRound(valueNum, 1000, divisor)
+		if err != nil {
+			return nil, err
+		}
 		if strings.EqualFold(settings.WeightUnit, "gram") {
-			weightMilli = (weightMilli + 500) / 1000
+			weightMilli, err = money.MulDivRound(weightMilli, 1, 1000)
+			if err != nil {
+				return nil, err
+			}
 		}
 		dec.Weight = money.Qty(weightMilli)
-		dec.TotalPrice = money.MulQty(pricePerKg, dec.Weight)
+		totalPrice, err := money.MulQty(pricePerKg, dec.Weight)
+		if err != nil {
+			return nil, err
+		}
+		dec.TotalPrice = totalPrice
 	}
 	if dec.Weight <= 0 || dec.TotalPrice <= 0 {
 		return nil, errors.New("الوزن أو الإجمالي الناتج من باركود الميزان غير صحيح.")

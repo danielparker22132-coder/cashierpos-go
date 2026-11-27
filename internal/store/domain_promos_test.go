@@ -18,8 +18,17 @@ func b1CreateOffer(t *testing.T, s *Store, in OfferInput) *Offer {
 	return o
 }
 
+// mustMulQty is MulQty for test constants that can never overflow.
+func mustMulQty(unit money.Cents, qty money.Qty) money.Cents {
+	v, err := money.MulQty(unit, qty)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 func b1PromoLines(pid int64, qty money.Qty, unit, buy money.Cents, cat string) []PromoLine {
-	total := money.MulQty(unit, qty)
+	total := mustMulQty(unit, qty)
 	return []PromoLine{{ProductID: pid, Category: cat, Qty: qty, UnitPrice: unit,
 		LineGross: total, ItemDiscount: 0, LineTotal: total, BuyPrice: buy}}
 }

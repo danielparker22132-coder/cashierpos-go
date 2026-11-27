@@ -236,6 +236,15 @@ func (s *Store) ListCustomers(ctx context.Context, user *auth.User, query string
 	return out, nil
 }
 
+// dateOnly trims a "YYYY-MM-DD HH:MM:SS" datetime to its date part
+// (FIX-12 SW-L03); a value already date-only (or empty) is unchanged.
+func dateOnly(v string) string {
+	if len(v) > 10 {
+		return v[:10]
+	}
+	return v
+}
+
 // DebtorRow is one row of the debtors list (U-10).
 type DebtorRow struct {
 	Customer     *Customer
@@ -246,14 +255,41 @@ type DebtorRow struct {
 
 // ListDebtors returns customers with a live balance > 0: name, live balance,
 // open-invoice count, last purchase date, last payment date (U-10).
+// FIX-12 SW-L03: the last purchase/payment are DATES only (YYYY-MM-DD),
+// not full datetimes — the grid shows a date.
+// FIX-17 SW2-L04: LastPayment is the latest money actually received, so
+// it also covers a partial payment made at sale time (invoice
+// PaidAmount > 0, whose InvoiceDate is the payment date) — such a
+// payment never creates a CustomerPayments row, so the old
+// MAX(CustomerPayments.PaymentDate) alone left "آخر سداد" blank.
+// FIX-18 R18-B-02: "actually received" means NET cash still held, not
+// PaidAmount alone. ProcessReturn never zeroes PaidAmount — and must
+// not: PaidAmount is a historical fact consumed by sales reports
+// (net PaidAmount — FIX-19 R19-B-F1 nets the refunded payment out of
+// TotalPaid) and shift summaries (the PaidAmount fallback for
+// invoices with no Payments rows). The refund is already recorded as
+// a negative Payments row (domain_returns.go: the paid-out leg), so
+// the invoice leg counts an invoice only when PaidAmount exceeds the
+// cash refunded on it — a fully-returned invoice nets to 0 and drops
+// out, a partially-returned one still counts while any of its payment
+// is still held. The same net-received test gates the
+// CustomerPayments leg (a collection later refunded via a return, or
+// sitting on a canceled invoice, no longer counts); a payment with no
+// invoice attached (NULL/0 InvoiceID) cannot be attributed to a
+// refund, so it still counts. LastPurchase likewise ignores canceled
+// invoices (the pre-existing missing IsCanceled filter).
 func (s *Store) ListDebtors(ctx context.Context, user *auth.User) ([]*DebtorRow, error) {
 	if err := requireUser(user, rbac.PermManageCustomers); err != nil {
 		return nil, err
 	}
 	rows, err := s.DB.Query(`SELECT c.CustomerID,c.CustomerName,c.Phone,c.Address,c.Balance,c.CreditLimit,c.IsActive,c.CreatedDate,
 		(SELECT COUNT(*) FROM Invoices i WHERE i.CustomerID=c.CustomerID AND i.IsCanceled=0 AND i.RemainingAmount>0),
-		(SELECT MAX(i.InvoiceDate) FROM Invoices i WHERE i.CustomerID=c.CustomerID),
-		(SELECT MAX(cp.PaymentDate) FROM CustomerPayments cp WHERE cp.CustomerID=c.CustomerID)
+		(SELECT MAX(i.InvoiceDate) FROM Invoices i WHERE i.CustomerID=c.CustomerID AND i.IsCanceled=0),
+		(SELECT MAX(x) FROM (SELECT cp.PaymentDate AS x FROM CustomerPayments cp WHERE cp.CustomerID=c.CustomerID
+			AND (cp.InvoiceID IS NULL OR cp.InvoiceID=0 OR EXISTS (SELECT 1 FROM Invoices i WHERE i.InvoiceID=cp.InvoiceID AND i.IsCanceled=0
+				AND i.PaidAmount>COALESCE((SELECT -SUM(p.Amount) FROM Payments p WHERE p.InvoiceID=i.InvoiceID AND p.Amount<0),0)))
+			UNION ALL SELECT i.InvoiceDate FROM Invoices i WHERE i.CustomerID=c.CustomerID AND i.IsCanceled=0
+				AND i.PaidAmount>COALESCE((SELECT -SUM(p.Amount) FROM Payments p WHERE p.InvoiceID=i.InvoiceID AND p.Amount<0),0)))
 		FROM Customers c ORDER BY c.CustomerID`)
 	if err != nil {
 		return nil, err
@@ -280,7 +316,11 @@ func (s *Store) ListDebtors(ctx context.Context, user *auth.User) ([]*DebtorRow,
 		c.StoredBalance = money.Cents(stored)
 		c.CreditLimit = money.Cents(limit)
 		c.IsActive = active == 1
-		raw = append(raw, rawDebtor{c: c, openCount: openCount, lastPurchase: lastPurchase.String, lastPayment: lastPayment.String})
+		// FIX-12 SW-L03: date only — MAX(InvoiceDate)/MAX(PaymentDate)
+		// come back as full datetimes ("2026-11-26 04:01:28"); the
+		// debtors grid (and the /api/debtors field feeding it) shows
+		// the date part only.
+		raw = append(raw, rawDebtor{c: c, openCount: openCount, lastPurchase: dateOnly(lastPurchase.String), lastPayment: dateOnly(lastPayment.String)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -324,6 +364,11 @@ type StatementPayment struct {
 }
 
 // CustomerStatement is a printable statement: invoices + payments + totals.
+// TotalPurchases is gross (sum of the listed non-canceled invoice nets —
+// a returned invoice stays listed at its net, so netting it would break
+// the rows-sum-to-total); TotalPaid is net cash received (sum of the
+// listed payment rows: at-sale + collections - refunds); TotalRemaining
+// is the live balance (sum of Remaining). See CustomerStatement.
 type CustomerStatement struct {
 	Customer       *Customer
 	Invoices       []*StatementInvoice
@@ -368,11 +413,54 @@ func (s *Store) CustomerStatement(ctx context.Context, user *auth.User, id int64
 	// amount-matching subquery against Payments was fragile — two
 	// payments of the same amount could return the wrong method — and
 	// its comment claiming the column did not exist was wrong).
-	prows, err := s.DB.Query(`SELECT cp.PaymentDate,cp.Amount,
-		COALESCE(cp.PaymentMethod,''),
-		i.InvoiceNumber,cp.Notes
-		FROM CustomerPayments cp LEFT JOIN Invoices i ON i.InvoiceID=cp.InvoiceID
-		WHERE cp.CustomerID=? ORDER BY cp.PaymentDate, cp.CPaymentID`, id)
+	// FIX-20 R20-A-F2: the payments section is the customer's net
+	// cash ledger, so it lists every cash movement with the customer:
+	// debt collections (CustomerPayments, as before) PLUS at-sale
+	// payments PLUS refund legs (negative Payments rows, Notes=
+	// 'مرتجع'). TotalPaid is the sum of the listed rows — net cash
+	// received. Listing only collections while subtracting refunds
+	// would drive TotalPaid negative whenever a refund repays
+	// at-sale money (a fully-paid sale returned in full would read
+	// -3000 against a live balance of 0); listing the at-sale leg
+	// too keeps the rows summing to the total in every shape.
+	// All three Payments legs are scoped to non-canceled invoices:
+	// a canceled sale's money was handed back at cancel (CashBox
+	// only, no Payments row), so its at-sale leg must not appear
+	// without an offsetting row, a collection on an invoice that
+	// was later canceled is part of that void, not a live payment
+	// (FIX-21 R21-B-F1: leg 1 used to list it), and a refund on a
+	// sale that was later canceled is part of that void too.
+	// Collections with no invoice attached (NULL/0 InvoiceID)
+	// cannot be attributed to a canceled sale, so they still count.
+	// Coherence: TotalRemaining = TotalPurchases - TotalPaid -
+	// totalRefund, where totalRefund is the full returned-goods
+	// value (debtReduction + paidOut). The negative listed rows
+	// show the paidOut part; the debtReduction part shows as the
+	// invoice's own Remaining dropping to 0 — so the gap between
+	// (purchases - paid) and the balance after a return is exactly
+	// the return, split across the two visible places.
+	prows, err := s.DB.Query(`SELECT d, amt, m, invno, notes FROM (
+			SELECT cp.PaymentDate AS d, cp.Amount AS amt,
+				COALESCE(cp.PaymentMethod,'') AS m,
+				i.InvoiceNumber AS invno, cp.Notes AS notes,
+				1 AS kind, cp.CPaymentID AS seq
+			FROM CustomerPayments cp LEFT JOIN Invoices i ON i.InvoiceID=cp.InvoiceID
+			WHERE cp.CustomerID=?
+				AND (cp.InvoiceID IS NULL OR cp.InvoiceID=0 OR EXISTS (SELECT 1 FROM Invoices i2
+					WHERE i2.InvoiceID=cp.InvoiceID AND i2.IsCanceled=0))
+			UNION ALL
+			SELECT p.PaymentDate, p.Amount,
+				COALESCE(p.PaymentMethod,''),
+				i.InvoiceNumber, p.Notes, 0, p.PaymentID
+			FROM Payments p JOIN Invoices i ON i.InvoiceID=p.InvoiceID
+			WHERE p.CustomerID=? AND p.Notes='دفعة عند البيع' AND i.IsCanceled=0
+			UNION ALL
+			SELECT p.PaymentDate, p.Amount,
+				COALESCE(p.PaymentMethod,''),
+				i.InvoiceNumber, p.Notes, 2, p.PaymentID
+			FROM Payments p JOIN Invoices i ON i.InvoiceID=p.InvoiceID
+			WHERE p.CustomerID=? AND p.Amount<0 AND i.IsCanceled=0
+		) ORDER BY d, kind, seq`, id, id, id)
 	if err != nil {
 		return nil, err
 	}
@@ -543,6 +631,21 @@ func (s *Store) PayCustomerDebtGeneral(ctx context.Context, user *auth.User, cus
 // must not exceed that invoice's remaining — overpayment is refused.
 // Cash requires an open shift. Perm: collect_payment.
 func (s *Store) PayCustomerInvoice(ctx context.Context, user *auth.User, invoiceID int64, amount money.Cents, method, notes string) (money.Cents, error) {
+	return s.payCustomerInvoice(ctx, user, 0, invoiceID, amount, method, notes)
+}
+
+// PayCustomerInvoiceForCustomer pays a specific invoice only when it
+// belongs to the given customer (FIX-17 SW2-M02): the HTML pay-invoice
+// route and the API route both carry the customer in the URL, and a
+// payment posted from another customer's page must be refused instead
+// of silently landing on the invoice's real owner while the cashier is
+// told it was recorded on the page's customer. expectedCustomerID is
+// the URL customer; 0 (via PayCustomerInvoice) means "no check".
+func (s *Store) PayCustomerInvoiceForCustomer(ctx context.Context, user *auth.User, customerID, invoiceID int64, amount money.Cents, method, notes string) (money.Cents, error) {
+	return s.payCustomerInvoice(ctx, user, customerID, invoiceID, amount, method, notes)
+}
+
+func (s *Store) payCustomerInvoice(ctx context.Context, user *auth.User, expectedCustomerID, invoiceID int64, amount money.Cents, method, notes string) (money.Cents, error) {
 	if err := rbac.Require(user.Role, rbac.PermCollectPayment); err != nil {
 		return 0, err
 	}
@@ -566,6 +669,14 @@ func (s *Store) PayCustomerInvoice(ctx context.Context, user *auth.User, invoice
 		}
 		if canceled == 1 {
 			return errors.New("هذه الفاتورة ملغاة")
+		}
+		// FIX-17 SW2-M02: when the caller names the customer (the URL
+		// customer on the HTML/API pay-invoice routes), the invoice
+		// must belong to that customer — otherwise refuse before any
+		// money moves, instead of paying another customer's invoice
+		// while the cashier is told it landed on the page's customer.
+		if expectedCustomerID != 0 && customerID != expectedCustomerID {
+			return errors.New("هذه الفاتورة لا تخص هذا العميل — لا يمكن سدادها من صفحته")
 		}
 		if rem <= 0 {
 			return errors.New("هذه الفاتورة لا يوجد عليها متبقي للسداد")

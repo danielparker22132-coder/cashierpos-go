@@ -259,9 +259,12 @@ func TestAutoLockFiveWrongPasswordsForceLogout(t *testing.T) {
 	}
 }
 
-// TestAutoLockPerUserOverridesGlobal: a per-user 0 disables the lock for
-// that user even when the global value is 1, and a per-user 1 locks the
-// user even when the global value is 0.
+// TestAutoLockPerUserOverridesGlobal: MANDATED SPEC CHANGE (FIX-17 SW2-L07,
+// parent ruling per FEATURE_MAP L-14): the GLOBAL value now wins — a
+// per-user 0 no longer disables the lock when the global value is > 0,
+// and a per-user value only applies when the global value is 0. The old
+// test encoded the opposite (per-user-wins) precedence and is replaced,
+// not silently weakened: both directions are re-pinned below.
 func TestAutoLockPerUserOverridesGlobal(t *testing.T) {
 	e := newLockEnv(t)
 	if err := e.st.SetSetting("auto_lock_minutes", "1"); err != nil {
@@ -270,9 +273,9 @@ func TestAutoLockPerUserOverridesGlobal(t *testing.T) {
 	if err := e.st.SetSetting("auto_lock_minutes:cashier", "0"); err != nil {
 		t.Fatal(err)
 	}
-	e.backdate(2 * time.Hour)
-	if code, _, _ := e.get("/"); code != http.StatusOK {
-		t.Fatalf("per-user 0 with global 1: GET / = %d, want 200 (disabled for this user)", code)
+	e.backdate(2 * time.Minute)
+	if code, loc, _ := e.get("/"); code != http.StatusSeeOther || !strings.HasPrefix(loc, "/lock?next=") {
+		t.Fatalf("global 1 + per-user 0: GET / = %d loc %q, want 303 to /lock (global wins)", code, loc)
 	}
 
 	if err := e.st.SetSetting("auto_lock_minutes", "0"); err != nil {
@@ -281,6 +284,12 @@ func TestAutoLockPerUserOverridesGlobal(t *testing.T) {
 	if err := e.st.SetSetting("auto_lock_minutes:cashier", "1"); err != nil {
 		t.Fatal(err)
 	}
+	// The previous lock did not refresh the stamp; re-seed it to now so
+	// the second window measures from a fresh activity stamp.
+	token := e.tokenOf(e.cash)
+	lockStateMu.Lock()
+	lockLast[token] = time.Now()
+	lockStateMu.Unlock()
 	e.backdate(2 * time.Minute)
 	code, loc, _ := e.get("/")
 	if code != http.StatusSeeOther || !strings.HasPrefix(loc, "/lock?next=") {
@@ -288,16 +297,31 @@ func TestAutoLockPerUserOverridesGlobal(t *testing.T) {
 	}
 }
 
-// TestAutoLockGlobalZeroDisables: global 0 disables the lock for everyone
-// with no per-user override.
-func TestAutoLockGlobalZeroDisables(t *testing.T) {
+// TestAutoLockGlobalZeroFallsBackToOwn: MANDATED SPEC CHANGE (FIX-17
+// SW2-L07, FEATURE_MAP L-14) — replaces TestAutoLockGlobalZeroDisables.
+// Global 0 no longer disables the lock outright: it falls back to the
+// user's own value, and a missing per-user value defaults to 15 minutes.
+// So global 0 + own 0 never locks, but global 0 + no override locks
+// after 15 minutes of idle.
+func TestAutoLockGlobalZeroFallsBackToOwn(t *testing.T) {
 	e := newLockEnv(t)
 	if err := e.st.SetSetting("auto_lock_minutes", "0"); err != nil {
 		t.Fatal(err)
 	}
+	if err := e.st.SetSetting("auto_lock_minutes:cashier", "0"); err != nil {
+		t.Fatal(err)
+	}
 	e.backdate(2 * time.Hour)
 	if code, _, _ := e.get("/"); code != http.StatusOK {
-		t.Fatalf("global 0: GET / = %d, want 200", code)
+		t.Fatalf("global 0 + own 0: GET / = %d, want 200 (never lock)", code)
+	}
+	// No override: the 15-minute default applies.
+	if err := e.st.SetSetting("auto_lock_minutes:cashier", ""); err != nil {
+		t.Fatal(err)
+	}
+	e.backdate(2 * time.Hour)
+	if code, loc, _ := e.get("/"); code != http.StatusSeeOther || !strings.HasPrefix(loc, "/lock?next=") {
+		t.Fatalf("global 0 + no override: GET / = %d loc %q, want 303 to /lock (15-min default)", code, loc)
 	}
 }
 

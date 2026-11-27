@@ -54,8 +54,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// Generic failure for unknown user / wrong password (L-01: no
 			// user enumeration); empty-field messages come from
-			// auth.Authenticate (L-02).
-			_ = s.render(w, r, "login.html", Page{Title: "تسجيل الدخول", Error: err.Error(), Data: LoginForm{Username: username}})
+			// auth.Authenticate (L-02). FIX-27 R27-C-F2/E-F1: gate
+			// through safeHTMLErr — Authenticate returns the raw
+			// driver error for a DB failure (e.g. "no such table:
+			// Users"), which must never reach the login page.
+			// Safe Arabic messages (wrong password, empty fields,
+			// inactive account) pass through verbatim.
+			LogErr(r, err)
+			_ = s.render(w, r, "login.html", Page{Title: "تسجيل الدخول", Error: safeHTMLErr(err), Data: LoginForm{Username: username}})
 			return
 		}
 		token, err := auth.CreateSession(s.Store.DB, u)
@@ -106,7 +112,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := auth.ChangePassword(s.Store.DB, u.ID, nw); err != nil {
-			_ = s.render(w, r, "change_password.html", Page{Title: "تغيير كلمة السر", Error: err.Error()})
+			// FIX-27 R27-E-F3: gate through safeHTMLErr —
+			// ChangePassword returns the raw driver Exec error
+			// (e.g. a constraint failure), which must never reach
+			// the page. The short-password Arabic message passes
+			// through verbatim.
+			LogErr(r, err)
+			_ = s.render(w, r, "change_password.html", Page{Title: "تغيير كلمة السر", Error: safeHTMLErr(err)})
 			return
 		}
 		u.MustChangePassword = false
@@ -161,6 +173,13 @@ type HubData struct {
 	TodayInvoices int64
 	ShiftSales    money.Cents
 	ShiftInvoices int64
+	// FIX-24 R24-C-N1: the sales-summary SUM error, if the day/shift
+	// SUM(NetAmount) scan failed (e.g. SQLite integer overflow on
+	// absurd stored rows). Empty on the normal path. When set, the
+	// hub shows this message instead of a silent 0.00 total, like
+	// Dashboard surfaces the same error via renderAdminErr
+	// (domain_reports.go Dashboard + sumScanErr).
+	SummaryError string
 	// H-3: expected drawer balance of the open shift (HasDrawer false
 	// with no open shift — the card shows "—").
 	DrawerBalance money.Cents
@@ -181,6 +200,13 @@ type HubData struct {
 	ExpiredCount    int
 	NearExpiryCount int
 	VendorDueCount  int
+	// FIX-12 SW-M03: due-payables reminder (count of open/partial
+	// payables due within 30 days or overdue, from DuePayables).
+	// ShowDuePayablesReminder is true only on the first hub render
+	// of the day for this user — the once-per-day dedupe (see
+	// hubData); later hub loads the same day hide it.
+	DuePayablesCount        int
+	ShowDuePayablesReminder bool
 }
 
 func (s *Server) handleHub(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +223,14 @@ func (s *Server) handleHub(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/change-password?forced=1", http.StatusSeeOther)
 		return
 	}
-	p := Page{Title: "الرئيسية", ActiveNav: "hub", Data: s.hubData(u)}
+	d := s.hubData(u)
+	p := Page{Title: "الرئيسية", ActiveNav: "hub", Data: d}
+	if d.SummaryError != "" {
+		// FIX-24 R24-C-N1: surface the summary SUM error as the page
+		// error too, exactly like Dashboard does via renderAdminErr
+		// (layout.html renders .Error as the top alert banner).
+		p.Error = d.SummaryError
+	}
 	if r.URL.Query().Get("changed") == "1" {
 		p.Notice = "تم تغيير كلمة السر بنجاح."
 	}
@@ -207,6 +240,21 @@ func (s *Server) handleHub(w http.ResponseWriter, r *http.Request) {
 	_ = s.Store.DB.QueryRow(`SELECT COUNT(*) FROM Notifications
 		WHERE IsRead=0 AND (UserName=? OR UserName='')`, u.UserName).Scan(&p.UnreadNotif)
 	_ = s.render(w, r, "hub.html", p)
+}
+
+// hubSummaryErr mirrors store.sumScanErr (domain_reports.go) for the
+// hub's sales-summary SUM: a SQLite integer overflow becomes the
+// Arabic money.ErrOverflow message; any other scan error is returned
+// verbatim, exactly like Dashboard returns it via renderAdminErr.
+// A failed SUM must never surface as a silent 0.00 (R24-C-N1).
+func hubSummaryErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(err.Error(), "integer overflow") {
+		return money.ErrOverflow.Error()
+	}
+	return err.Error()
 }
 
 // hubData loads the hub panels. Every query tolerates an empty database
@@ -272,21 +320,53 @@ func (s *Server) hubData(u *auth.User) HubData {
 		}
 	}
 
+	// FIX-12 SW-M03: due-payables reminder on the hub, once per day
+	// per user. Audience follows the DuePayables contract (owner =
+	// Admin/Manager, plus the on-shift user — the cashier/supervisor
+	// working a shift today); warehouse never qualifies (no shift,
+	// not admin). Dedupe is a lightweight stored flag in AppSettings,
+	// keyed by user + date: the first hub render of the day with due
+	// payables shows the reminder and records the flag; later hub
+	// renders the same day see the flag and hide it. A new day (new
+	// key) shows it again; a payable that becomes due later the same
+	// day does NOT — the flag is already set and is never cleared
+	// within the day. The flag is render-only state — it never
+	// touches Payables rows (read-only use of DuePayables;
+	// domain_payables.go untouched).
+	if rbac.EffectiveRole(u.Role) == rbac.RoleAdmin || d.ShiftID != 0 {
+		if due, err := s.Store.DuePayables(context.Background(), u); err == nil && len(due) > 0 {
+			flagKey := "payables_reminder_shown:" + u.UserName + ":" + today
+			if s.Store.GetSetting(flagKey) == "" {
+				d.DuePayablesCount = len(due)
+				d.ShowDuePayablesReminder = true
+				_ = s.Store.SetSetting(flagKey, "1")
+			}
+		}
+	}
+
 	// Sales summary. InvoiceDate is stored as a timestamp string, so match
 	// on its date prefix.
+	// FIX-24 R24-C-N1: the SUM scan error must surface, never silently
+	// zero the totals (the Dashboard path maps it through sumScanErr in
+	// domain_reports.go; the same mapping is applied here — see
+	// hubSummaryErr below).
 	if rbac.Can(u.Role, rbac.PermViewReports) {
 		d.SummaryScope = "day"
 		var total sql.NullInt64
-		_ = s.Store.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0) FROM Invoices
-			WHERE IsCanceled=0 AND substr(InvoiceDate,1,10)=?`, today).Scan(&d.TodayInvoices, &total)
+		if err := s.Store.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0) FROM Invoices
+			WHERE IsCanceled=0 AND substr(InvoiceDate,1,10)=?`, today).Scan(&d.TodayInvoices, &total); err != nil {
+			d.SummaryError = hubSummaryErr(err)
+		}
 		d.TodaySales = money.Cents(total.Int64)
 	} else if d.ShiftID != 0 {
 		// Cashier (and anyone without view_reports) sees only their own
 		// shift's totals (§15 row 6 / M4).
 		d.SummaryScope = "shift"
 		var total sql.NullInt64
-		_ = s.Store.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0) FROM Invoices
-			WHERE IsCanceled=0 AND ShiftID=?`, d.ShiftID).Scan(&d.ShiftInvoices, &total)
+		if err := s.Store.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(NetAmount),0) FROM Invoices
+			WHERE IsCanceled=0 AND ShiftID=?`, d.ShiftID).Scan(&d.ShiftInvoices, &total); err != nil {
+			d.SummaryError = hubSummaryErr(err)
+		}
 		d.ShiftSales = money.Cents(total.Int64)
 	} else {
 		// PR-M1: shift-less and without view_reports — the shift-scope

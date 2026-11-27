@@ -12,7 +12,7 @@
 
 <h2>إعدادات عامة</h2>
 <form method="post" action="/settings/general" class="form">
-<label>مهلة القفل التلقائي (دقيقة — 0 = معطل) <input type="number" name="auto_lock_minutes" value="{{.Data.AutoLock}}" min="0" max="600"></label>
+<label>مهلة القفل التلقائي (دقيقة — 0 = بلا مدة عامة) <input type="number" name="auto_lock_minutes" value="{{.Data.AutoLock}}" min="0" max="600"></label>
 <p class="hint"><a href="/lock/settings">إعدادات القفل التلقائي</a> — مهلة عامة ومهلة لكل مستخدم على حدة</p>
 <label><input type="checkbox" name="dark_mode" value="1"{{if .Data.DarkMode}} checked{{end}}> الوضع الداكن (يُطبَّق فوراً)</label>
 <button type="submit" class="btn-primary">حفظ الإعدادات العامة</button>

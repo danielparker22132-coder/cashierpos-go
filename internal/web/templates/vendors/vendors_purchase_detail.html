@@ -3,22 +3,30 @@
 <p>المورد: {{.Data.Purchase.Purchase.VendorName}} · التاريخ: <span class="num">{{.Data.Purchase.Purchase.Date}}</span> · بواسطة: {{.Data.Purchase.Purchase.UserName}}</p>
 <p><button onclick="window.print()">{{template "icon-printer"}} طباعة</button> <a href="/vendors/{{.Data.Purchase.Purchase.VendorID}}">عودة للمورد</a></p>
 <table>
-  <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th><th>الإجمالي</th><th>التشغيلة</th><th>الصلاحية</th></tr></thead>
+  <thead><tr><th>الصنف</th><th>الكمية</th>{{if index .Data "canViewProfit"}}<th>سعر الشراء</th><th>الإجمالي</th>{{end}}<th>التشغيلة</th><th>الصلاحية</th></tr></thead>
   <tbody>
   {{range .Data.Purchase.Lines}}
     <tr>
       <td>{{.ProductName}}</td>
       <td class="num">{{qty .Qty}}</td>
-      <td class="num">{{egp .PurchasePrice}}</td>
-      <td class="num">{{egp .Total}}</td>
+      {{if index $.Data "canViewProfit"}}<td class="num">{{egp .PurchasePrice}}</td>
+      <td class="num">{{egp .Total}}</td>{{end}}
       <td class="num">{{.BatchNumber}}</td>
       <td class="num">{{.ExpiryDate}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
+{{/* FIX-14 R14-L1: on a single-line purchase the header totals leak the
+   unit buy price by division (Total = Paid + Remaining exactly, so
+   hiding Total alone leaves (Paid+Remaining)/Qty — and with Paid=0,
+   Remaining IS the total). Hide the whole money block for roles without
+   view_profit when there is exactly one line; multi-line totals stay
+   visible (payables settlement; derivation ambiguous). */}}
+{{if or (index .Data "canViewProfit") (ne (len .Data.Purchase.Lines) 1)}}
 <p>الإجمالي: <strong class="num">{{egp .Data.Purchase.Purchase.Total}}</strong></p>
 <p>المدفوع: <strong class="num">{{egp .Data.Purchase.Purchase.Paid}}</strong> · المتبقي: <strong class="num">{{egp .Data.Purchase.Purchase.Remaining}}</strong></p>
+{{end}}
 <p>طريقة الدفع: {{.Data.Purchase.Purchase.PaymentMethod}} · تاريخ الاستحقاق: <span class="num">{{.Data.Purchase.Purchase.DueDate}}</span></p>
 <p>ملاحظات: {{.Data.Purchase.Purchase.Notes}}</p>
 {{template "chrome-bottom" .}}

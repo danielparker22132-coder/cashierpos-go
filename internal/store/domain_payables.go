@@ -12,6 +12,16 @@
 //     what the drawer covers (drawer gate for cash). Who paid and when is
 //     recorded (audit row; PaidAt on full settlement). The remaining never
 //     goes below zero — partial settlement keeps Status 'partial'.
+//   - Cancel (FIX-12 SW-H02): an open/partial payable can be cancelled
+//     with a reason + audit row; a paid payable is final and can never
+//     be cancelled, and a cancelled payable cannot be settled or
+//     cancelled again. Cancelling moves no money and never touches the
+//     drawer. Cancelled payables are excluded from the default list
+//     (only an explicit status=cancelled filter shows them).
+//   - View (FIX-12 SW-H08, §15 row 79): warehouse may NOT view payables
+//     at all; admin/manager/supervisor/cashier may.
+//   - Due date is optional (FIX-12 SW-M01) and the reason/description
+//     is required (FIX-12 SW-M02).
 //   - Settling a manual payable does NOT change Vendors.CurrentBalance or
 //     CourierDebts: it is its own ledger. (If jony wants it linked to the
 //     vendor balance, that is a follow-up decision — see report.)
@@ -40,7 +50,7 @@ type Payable struct {
 	Remaining   money.Cents
 	DueDate     string // YYYY-MM-DD
 	Description string
-	Status      string // open | partial | paid
+	Status      string // open | partial | paid | cancelled
 	CreatedBy   string
 	CreatedAt   string
 	PaidAt      string
@@ -57,7 +67,11 @@ type PayableInput struct {
 }
 
 // CreatePayable creates a manual payable. Admin/Manager only.
-// Amount must be > 0, due date is required, kind must be vendor|courier.
+// Amount must be > 0, kind must be vendor|courier, and the
+// reason/description is required (FIX-12 SW-M02). The due date is
+// optional (FIX-12 SW-M01): when given it must be YYYY-MM-DD; when
+// empty the payable simply has no due date and never appears in the
+// due/alerts lists.
 // For kind=vendor the vendor must exist and its name is stored.
 func (s *Store) CreatePayable(ctx context.Context, user *auth.User, in PayableInput) (int64, error) {
 	if err := rbac.Require(user.Role, rbac.PermManagePayables); err != nil {
@@ -70,11 +84,18 @@ func (s *Store) CreatePayable(ctx context.Context, user *auth.User, in PayableIn
 	if in.Amount <= 0 {
 		return 0, errors.New("مبلغ المستحق يجب أن يكون أكبر من صفر")
 	}
-	if strings.TrimSpace(in.DueDate) == "" {
-		return 0, errors.New("تاريخ الاستحقاق مطلوب")
+	// FIX-12 SW-M02: a reason is required — a reason-less payable must
+	// not enter the ledger.
+	if strings.TrimSpace(in.Description) == "" {
+		return 0, errors.New("وصف المستحق مطلوب — اكتب سبب المستحق")
 	}
-	if _, err := time.Parse("2006-01-02", strings.TrimSpace(in.DueDate)); err != nil {
-		return 0, errors.New("تاريخ الاستحقاق غير صحيح — استخدم الصيغة YYYY-MM-DD")
+	// FIX-12 SW-M01: the due date is optional; validate the format
+	// only when one is given.
+	dueDate := strings.TrimSpace(in.DueDate)
+	if dueDate != "" {
+		if _, err := time.Parse("2006-01-02", dueDate); err != nil {
+			return 0, errors.New("تاريخ الاستحقاق غير صحيح — استخدم الصيغة YYYY-MM-DD")
+		}
 	}
 	var id int64
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
@@ -140,11 +161,23 @@ func (s *Store) GetPayable(ctx context.Context, user *auth.User, id int64) (*Pay
 	return &p, nil
 }
 
+// payablesViewDenied is the uniform §15 row 79 denial (FIX-12 SW-H08):
+// warehouse may not view payables at all.
+func payablesViewDenied(user *auth.User) error {
+	return fmt.Errorf("غير مسموح — هذا الإجراء غير متاح لدورك الحالي. الدور: %s. تواصل مع المدير.", rbac.RoleDisplayName(user.Role))
+}
+
 // ListPayables returns payables, optionally filtered by status
-// (open|partial|paid) and/or kind.
+// (open|partial|paid|cancelled) and/or kind. With no status filter the
+// default list shows open+partial+paid only — cancelled payables are
+// excluded (FIX-12 SW-H02); pass status=cancelled to see them.
+// Warehouse is denied (FIX-12 SW-H08, §15 row 79).
 func (s *Store) ListPayables(ctx context.Context, user *auth.User, status, kind string) ([]*Payable, error) {
 	if err := requireUser(user, ""); err != nil {
 		return nil, err
+	}
+	if rbac.EffectiveRole(user.Role) == rbac.RoleWarehouse {
+		return nil, payablesViewDenied(user)
 	}
 	q := `SELECT PayableID,Kind,PartyID,PartyName,Amount,Remaining,DueDate,Description,Status,CreatedBy,CreatedAt,PaidAt
 		FROM Payables WHERE 1=1`
@@ -152,6 +185,9 @@ func (s *Store) ListPayables(ctx context.Context, user *auth.User, status, kind 
 	if strings.TrimSpace(status) != "" {
 		q += ` AND Status=?`
 		args = append(args, strings.TrimSpace(status))
+	} else {
+		// Default list: cancelled payables are history, not live work.
+		q += ` AND Status<>'cancelled'`
 	}
 	if strings.TrimSpace(kind) != "" {
 		q += ` AND Kind=?`
@@ -182,9 +218,16 @@ func (s *Store) ListPayables(ctx context.Context, user *auth.User, status, kind 
 
 // DuePayables returns open/partial payables due within the next 30 days or
 // already overdue — the reminder shown to the owner AND to the on-shift
-// cashier (GAP-REPORT §3.2). No role gate: every logged-in user may read
-// the reminder list; settling is gated separately.
+// cashier (GAP-REPORT §3.2). A payable without a due date never appears
+// here (FIX-12 SW-M01). Warehouse is denied (FIX-12 SW-H08, §15 row 79);
+// settling is gated separately.
 func (s *Store) DuePayables(ctx context.Context, user *auth.User) ([]*Payable, error) {
+	if err := requireUser(user, ""); err != nil {
+		return nil, err
+	}
+	if rbac.EffectiveRole(user.Role) == rbac.RoleWarehouse {
+		return nil, payablesViewDenied(user)
+	}
 	limit := time.Now().In(cairoLoc()).AddDate(0, 0, 30).Format("2006-01-02")
 	rows, err := s.DB.Query(`SELECT PayableID,Kind,PartyID,PartyName,Amount,Remaining,DueDate,Description,Status,CreatedBy,CreatedAt,PaidAt
 		FROM Payables WHERE Status IN ('open','partial') AND DueDate<>'' AND DueDate<=? ORDER BY DueDate, PayableID`, limit)
@@ -240,6 +283,9 @@ func (s *Store) SettlePayable(ctx context.Context, user *auth.User, id int64, am
 		}
 		p.Amount = money.Cents(amt)
 		p.Remaining = money.Cents(rem)
+		if p.Status == "cancelled" {
+			return errors.New("هذا المستحق ملغى — لا يمكن سداده")
+		}
 		if p.Status == "paid" || p.Remaining <= 0 {
 			return errors.New("هذا المستحق مسدَّد بالكامل بالفعل")
 		}
@@ -285,6 +331,48 @@ func (s *Store) SettlePayable(ctx context.Context, user *auth.User, id int64, am
 		return 0, err
 	}
 	return remainingAfter, nil
+}
+
+// CancelPayable cancels a manual payable (FIX-12 SW-H02). Allowed only
+// from open/partial status and only for Admin/Manager (manage_payables);
+// a paid payable is final and can never be cancelled, and an already
+// cancelled payable cannot be cancelled again. A reason is required and
+// is recorded in the audit row. Cancelling moves NO money and never
+// touches the drawer; the remaining is kept as the record of what was
+// cancelled, and the row leaves the default list.
+func (s *Store) CancelPayable(ctx context.Context, user *auth.User, id int64, reason string) error {
+	if err := rbac.Require(user.Role, rbac.PermManagePayables); err != nil {
+		return err
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return errors.New("سبب الإلغاء مطلوب")
+	}
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		var p Payable
+		var amt, rem int64
+		if err := tx.QueryRow(`SELECT Kind,PartyID,PartyName,Amount,Remaining,DueDate,Description,Status
+			FROM Payables WHERE PayableID=?`, id).
+			Scan(&p.Kind, &p.PartyID, &p.PartyName, &amt, &rem, &p.DueDate, &p.Description, &p.Status); err == sql.ErrNoRows {
+			return errors.New("المستحق غير موجود")
+		} else if err != nil {
+			return err
+		}
+		p.Amount = money.Cents(amt)
+		p.Remaining = money.Cents(rem)
+		switch p.Status {
+		case "paid":
+			return errors.New("لا يمكن إلغاء مستحق مسدَّد بالكامل — السداد نهائي")
+		case "cancelled":
+			return errors.New("هذا المستحق ملغى بالفعل")
+		}
+		if _, err := tx.Exec(`UPDATE Payables SET Status='cancelled' WHERE PayableID=?`, id); err != nil {
+			return err
+		}
+		return AuditTx(tx, user.ID, user.UserName, "إلغاء مستحق يدوي", "payables", nil, 0, 0, "",
+			fmt.Sprintf("إلغاء مستحق (%s) — %s — %s — المتبقي %s — السبب: %s",
+				p.Kind, p.PartyName, money.FormatEGP(p.Amount), money.FormatEGP(p.Remaining), reason))
+	})
 }
 
 func nullableStr(v string) any {

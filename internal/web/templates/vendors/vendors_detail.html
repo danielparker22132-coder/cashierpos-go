@@ -1,7 +1,15 @@
 {{template "chrome-top" .}}
 <h1>المورد: {{.Data.Ledger.Vendor.Name}}</h1>
 <p>الهاتف: <span class="num">{{.Data.Ledger.Vendor.Phone}}</span> · العنوان: {{.Data.Ledger.Vendor.Address}}</p>
-<p>الرصيد الحالي: <strong class="num">{{egp .Data.Ledger.Vendor.CurrentBalance}}</strong> · حد الائتمان: <span class="num">{{egp .Data.Ledger.Vendor.CreditLimit}}</span></p>
+{{/* FIX-16 R16-M1: the vendor-level الرصيد الحالي is gated on
+   canViewVendorMoney (view_profit OR pay_vendors) — for a
+   single-purchase vendor it IS the invoice total, so showing it to
+   warehouse (which holds neither permission) leaks the unit price by
+   division with the Qty on the purchase detail page. حد الائتمان stays
+   visible to every role: it is an admin-set limit, not a purchase
+   total. Only the per-purchase money columns in the purchases table
+   are gated on canViewProfit. */}}
+<p>{{if index .Data "canViewVendorMoney"}}الرصيد الحالي: <strong class="num">{{egp .Data.Ledger.Vendor.CurrentBalance}}</strong> · {{end}}حد الائتمان: <span class="num">{{egp .Data.Ledger.Vendor.CreditLimit}}</span></p>
 <p>
   <a class="btn" href="/vendors/{{.Data.Ledger.Vendor.ID}}/edit">تعديل</a>
   <a class="btn" href="/vendors/{{.Data.Ledger.Vendor.ID}}/ledger">دفتر الأستاذ</a>
@@ -9,8 +17,22 @@
     <button type="submit">حذف</button>
   </form>
 </p>
+{{if index .Data "canViewVendorMoney"}}
 {{if gt .Data.Ledger.Vendor.CurrentBalance 0}}
 <h2>سداد مورد</h2>
+{{/* FIX-15 R15-M1: the pay form is the settlement surface and stays
+   exactly as-is for every role that may pay (PermPayVendors): the
+   amount prefill (BalanceEGP) and the per-invoice dropdown
+   ({{.InvoiceNo}} — متبقٍّ {{egp .Remaining}}) show the amount owed.
+   The dropdown exposes NO qty/product detail alongside the amount.
+   FIX-16 R16-M1: the whole form is gated on canViewVendorMoney, so
+   warehouse (no pay_vendors, no view_profit) no longer sees the
+   amounts at all — its POST was already 403, the form was dead UI
+   that leaked the total. Residual, accepted by parent decision
+   (review option (a)): on a single-purchase vendor a cashier who can
+   settle can still derive the unit price from the amount owed + the
+   Qty on the purchase detail page — that is inherent to letting
+   cashiers settle. */}}
 <form method="post" action="/vendors/{{.Data.Ledger.Vendor.ID}}/pay" class="form">
   <label>مبلغ السداد (ج.م) <input name="amount" inputmode="decimal" required value="{{.Data.BalanceEGP}}"></label>
   <label>فاتورة شراء محددة (اختياري)
@@ -33,22 +55,29 @@
 {{else}}
 <p>لا توجد مديونية على هذا المورد</p>
 {{end}}
+{{end}}
 <h2>فواتير الشراء</h2>
+{{/* FIX-15 R15-M1: gate ALL rows' money columns (الإجمالي / المدفوع /
+   المتبقي) on canViewProfit — not single-line-only: the ledger rows
+   carry no line count, and settlement does not use this table (it uses
+   the dropdown above), so gating all rows is the conservative closure.
+   Total = Paid + Remaining exactly, so hiding Total alone would leave
+   (Paid+Remaining)/Qty. */}}
 <table>
-  <thead><tr><th>رقم الفاتورة</th><th>التاريخ</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>الاستحقاق</th><th></th></tr></thead>
+  <thead><tr><th>رقم الفاتورة</th><th>التاريخ</th>{{if index .Data "canViewProfit"}}<th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th>{{end}}<th>الاستحقاق</th><th></th></tr></thead>
   <tbody>
   {{range .Data.Ledger.Purchases}}
     <tr>
       <td class="num">{{.InvoiceNo}}</td>
       <td class="num">{{.Date}}</td>
-      <td class="num">{{egp .Total}}</td>
+      {{if index $.Data "canViewProfit"}}<td class="num">{{egp .Total}}</td>
       <td class="num">{{egp .Paid}}</td>
-      <td class="num">{{egp .Remaining}}</td>
+      <td class="num">{{egp .Remaining}}</td>{{end}}
       <td class="num">{{.DueDate}}</td>
       <td><a href="/purchases/{{.PurchaseID}}">التفاصيل</a></td>
     </tr>
   {{else}}
-    <tr><td colspan="7">لا توجد فواتير شراء</td></tr>
+    <tr><td colspan="{{if index .Data "canViewProfit"}}7{{else}}4{{end}}">لا توجد فواتير شراء</td></tr>
   {{end}}
   </tbody>
 </table>

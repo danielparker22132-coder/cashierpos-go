@@ -2,8 +2,8 @@
 
 <h1>سجل إرسال التنبيه: {{.Data.Notif.Title}}</h1>
 {{if .Data.Logs}}
-<table><tr><th>المستخدم</th><th>مفتاح الحدث</th><th>وقت الإرسال</th></tr>
-{{range .Data.Logs}}<tr><td>{{.UserName}}</td><td>{{.EventKey}}</td><td>{{.SentAt}}</td></tr>{{end}}</table>
+<table><tr><th>المستخدم</th><th>مفتاح الحدث</th><th>الحالة</th><th>وقت الإرسال</th></tr>
+{{range .Data.Logs}}<tr><td>{{.UserName}}</td><td>{{.EventKey}}</td><td>{{.Status}}</td><td>{{.SentAt}}</td></tr>{{end}}</table>
 {{else}}<p>لم يُرسَل هذا التنبيه لأحد بعد</p>{{end}}
 <p><a href="/notifications/manage">عودة للإدارة</a></p>
 

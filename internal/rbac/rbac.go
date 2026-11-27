@@ -98,11 +98,12 @@ const (
 	PermChangeOwnPassword      = "change_own_password"
 	PermExportCSV              = "export_csv"
 	PermApproveCreditOverride  = "approve_credit_override"
-	// PermApproveBelowCost gates the below-cost confirmation (FIX-3 H2):
-	// admin/manager + supervisor may confirm a below-cost sale; a
-	// cashier may never confirm their own. Like AllowOverLimit, the
-	// flag is only an approval when the caller holds the permission —
-	// the service layer refuses it otherwise.
+	// PermApproveBelowCost gates the below-cost confirmation (FIX-3 H2,
+	// CORRECTED by FIX-12 SW-M10 per §15 row 17): only admin/manager
+	// may confirm a below-cost sale; a supervisor or cashier may never
+	// confirm their own. Like AllowOverLimit, the flag is only an
+	// approval when the caller holds the permission — the service
+	// layer refuses it otherwise.
 	PermApproveBelowCost = "approve_below_cost"
 	PermManagePromotions       = "manage_promotions"
 	PermStocktakeCount         = "stocktake_count"
@@ -110,6 +111,7 @@ const (
 	PermApproveStocktake       = "approve_stocktake"
 	PermManageNotifications    = "manage_notifications"
 	PermManagePayables         = "manage_payables"
+	PermViewPayables           = "view_payables"
 	PermSettlePayable          = "settle_payable"
 	// PermManageOrders is the staff online-orders permission (FIX-3 H1):
 	// intake + evidence resolve + status advance. Admin/Manager only.
@@ -142,6 +144,7 @@ var matrix = map[string]map[string]bool{
 		PermApproveBelowCost: true,
 		PermManagePromotions: true, PermStocktakeCount: true, PermManageStocktakes: true,
 		PermApproveStocktake: true, PermManageNotifications: true, PermManagePayables: true,
+		PermViewPayables: true,
 		PermSettlePayable: true, PermManageOrders: true,
 	},
 	RoleSupervisor: {
@@ -158,8 +161,11 @@ var matrix = map[string]map[string]bool{
 		PermViewZones:      true, PermViewCourierDebts: true,
 		PermEditCourierDebts: true, PermViewTransfers: true, PermCreateTransfer: true, PermApproveTransfer: true,
 		PermRejectTransfer: true, PermEnterCashCount: true,
+		PermViewPayables: true,
 		PermChangeOwnPassword: true, PermApproveCreditOverride: false,
-		PermApproveBelowCost: true,
+		// FIX-12 SW-M10 (§15 row 17): supervisor ❌ for selling below
+		// buy price — no below-cost approval for this role.
+		PermApproveBelowCost: false,
 		PermStocktakeCount: true,
 	},
 	RoleCashier: {
@@ -180,12 +186,17 @@ var matrix = map[string]map[string]bool{
 		// review, and the approvals log stays Admin/Manager only.
 		PermReviewCashCount:   true,
 		PermChangeOwnPassword: true,
+		PermViewPayables:      true,
 		PermSettlePayable:     true, // jony 2026-11-24: cashier may settle payables, drawer-gated, recorded
 		PermStocktakeCount:    true,
 	},
 	RoleWarehouse: {
 		PermViewProducts: true, PermAddStock: true, PermAdjustStock: true,
 		PermViewStock: true, PermReceivePurchase: true,
+		// FIX-12 SW-M11 (§15 row 64): warehouse views delivery zones
+		// (view-only). Zone management stays admin-only
+		// (PermManageZones is not granted here).
+		PermViewZones:         true,
 		PermChangeOwnPassword: true,
 		PermStocktakeCount:    true,
 	},

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -73,7 +74,7 @@ func (s *Store) SaveAutoLockMinutes(ctx context.Context, user *auth.User, minute
 		return err
 	}
 	if minutes < 0 || minutes > 600 {
-		return errors.New("مهلة القفل التلقائي بين 0 (معطل) و 600 دقيقة")
+		return errors.New("مهلة القفل التلقائي بين 0 (بلا مدة عامة) و 600 دقيقة")
 	}
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := SetSettingTx(tx, "auto_lock_minutes", strconv.Itoa(minutes)); err != nil {
@@ -241,16 +242,46 @@ func (s *Store) SaveDeliveryZones(ctx context.Context, user *auth.User, zones []
 	}
 	clean := make([]DeliveryZone, 0, len(zones)+1)
 	seen := map[string]bool{}
+	// FIX-17 SW2-L05: the duplicate check is case-insensitive (and trims
+	// whitespace). It also covers the ALREADY-STORED zones: a name that
+	// differs from a stored zone only by case is a duplicate. An exact
+	// match with a stored name is the same zone being re-saved, not a
+	// duplicate — without that exemption no zone list could ever be
+	// saved twice, since the form always re-posts the stored zones.
+	// FIX-18 R18-D1: stored is map[folded][]raw. A poisoned stored value
+	// (two names folding equal — reachable only via direct DB edit or
+	// restoring a pre-fix-17 backup, never through the app) must not
+	// wedge the save: the exact-match exemption below applies when the
+	// incoming name equals ANY raw stored name with that fold, not just
+	// the last one written.
+	stored := map[string][]string{}
+	for _, sz := range s.GetDeliveryZones() {
+		folded := strings.ToLower(sz.Name)
+		stored[folded] = append(stored[folded], sz.Name)
+	}
 	hasNag := false
 	for _, z := range zones {
 		z.Name = strings.TrimSpace(z.Name)
 		if z.Name == "" {
 			continue
 		}
-		if seen[z.Name] {
+		folded := strings.ToLower(z.Name)
+		if seen[folded] {
 			return fmt.Errorf("منطقة مكررة: %s", z.Name)
 		}
-		seen[z.Name] = true
+		seen[folded] = true
+		if raws, ok := stored[folded]; ok {
+			exact := false
+			for _, prev := range raws {
+				if prev == z.Name {
+					exact = true
+					break
+				}
+			}
+			if !exact {
+				return fmt.Errorf("منطقة مكررة: %s", z.Name)
+			}
+		}
 		if z.Fee < 0 {
 			return fmt.Errorf("رسوم منطقة %s لا يمكن أن تكون سالبة", z.Name)
 		}
@@ -438,11 +469,33 @@ func parseHHMM(t string) (string, error) {
 // ResetConfirmation is the exact text the admin must type to confirm a reset.
 const ResetConfirmation = "إعادة تعيين"
 
+// fkEnabled reports the PRAGMA foreign_keys value (1 = ON) on conn.
+func fkEnabled(ctx context.Context, conn *sql.Conn) (int, error) {
+	var v int
+	err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&v)
+	return v, err
+}
+
 // ResetDatabase drops every table and re-initialises the database
 // (default admin + cash customer are re-seeded). The attempt is audited
 // BEFORE the drop; the audit row itself is lost with the reset, which is
 // inherent to a full reset. Sessions are wiped, so the caller must log in
 // again as admin/admin123 afterwards.
+//
+// FIX-12 SW-H10: the reset is atomic. The drops run inside one transaction
+// with FK enforcement off (PRAGMA foreign_keys cannot be toggled inside a
+// transaction, so it is switched off on the connection first, then back on
+// before migrate/seed). If any drop fails, the transaction rolls back and
+// the live database is untouched — a reset either completes (fresh
+// admin/admin123) or fails cleanly with no partial damage.
+//
+// FIX-13 R13-M3: the whole OFF → drop → ON sequence holds ONE dedicated
+// connection (s.DB.Conn), so no concurrent request can grab the pooled
+// connection and write with FK off in the window between the OFF exec and
+// the transaction, and the re-enable runs in a defer on that same
+// connection — every exit path restores FK, never just the happy path.
+// FK is then VERIFIED actually ON (PRAGMA foreign_keys reads back 1);
+// a failed re-enable is logged loudly and refuses the reset.
 func (s *Store) ResetDatabase(ctx context.Context, user *auth.User, confirmation string) error {
 	if err := rbac.Require(user.Role, rbac.PermResetDB); err != nil {
 		return err
@@ -470,10 +523,67 @@ func (s *Store) ResetDatabase(ctx context.Context, user *auth.User, confirmation
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, t := range tables {
-		if _, err := s.DB.Exec(`DROP TABLE IF EXISTS "` + strings.ReplaceAll(t, `"`, `""`) + `"`); err != nil {
+	// FIX-13 R13-M3: one dedicated connection for OFF → drops → ON.
+	// The defer re-enables FK on this connection on EVERY exit path
+	// (including a failed drop or a failed re-enable itself) and logs
+	// loudly if the re-enable cannot be verified — FK must never stay
+	// OFF for the lifetime of the process.
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	fkRestored := false
+	connClosed := false
+	closeConn := func() {
+		if !connClosed {
+			connClosed = true
+			_ = conn.Close()
+		}
+	}
+	defer func() {
+		if !fkRestored {
+			if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+				log.Printf("RESET-DB: FAILED to re-enable foreign_keys after reset error: %v — FK enforcement may be OFF", err)
+			} else if on, verr := fkEnabled(ctx, conn); verr != nil || on != 1 {
+				log.Printf("RESET-DB: foreign_keys NOT verified ON after reset error (value=%d, err=%v) — FK enforcement may be OFF", on, verr)
+			}
+		}
+		closeConn()
+	}()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	dropErr := func() error {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
 			return err
 		}
+		defer tx.Rollback()
+		for _, t := range tables {
+			if _, err := tx.Exec(`DROP TABLE IF EXISTS "` + strings.ReplaceAll(t, `"`, `""`) + `"`); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	}()
+	// Re-enable FK on this same connection and VERIFY it is really ON
+	// before any other connection can use the pool again.
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		log.Printf("RESET-DB: FAILED to re-enable foreign_keys after reset: %v — FK enforcement may be OFF", err)
+		return err
+	}
+	on, err := fkEnabled(ctx, conn)
+	if err != nil || on != 1 {
+		log.Printf("RESET-DB: foreign_keys NOT verified ON after reset (value=%d, err=%v) — refusing to continue with FK off", on, err)
+		return fmt.Errorf("تعذّر التحقق من إعادة تفعيل المفاتيح الخارجية بعد إعادة التعيين")
+	}
+	fkRestored = true
+	// Release the dedicated connection BEFORE migrate/seed: they use the
+	// pool, and with MaxOpenConns(1) they would block forever while it
+	// is still held here.
+	closeConn()
+	if dropErr != nil {
+		return dropErr
 	}
 	if err := s.migrate(); err != nil {
 		return err

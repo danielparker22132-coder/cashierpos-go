@@ -72,9 +72,18 @@ type AuditFilter struct {
 }
 
 // dangerousActionTypes are the action types the smart monitor treats as risky.
+// Production audit writes Arabic ActionType values for the riskiest actions
+// (e.g. "إلغاء فاتورة" for a cancel), while a few actions are written in
+// English snake_case (delete_user, reset_database, restore_database) — so
+// the set must match BOTH spellings (FIX-12 SW-H07: the English-only list
+// matched 0 of 72 live audit rows and left the dangerous report and the
+// suspicious-only filter permanently blind for cancels and friends).
 var dangerousActionTypes = []string{
 	"cancel_invoice", "delete_user", "reset_database", "restore_database",
 	"force_close_shift", "void_invoice", "delete_invoice", "edit_price",
+	// Arabic spellings actually written by production AuditTx calls.
+	"إلغاء فاتورة", "حذف فاتورة", "إبطال فاتورة", "تعديل سعر",
+	"إغلاق شيفت قسري", "إغلاق قسري",
 }
 
 // ListAuditLog returns audit entries matching the filter (newest first).
@@ -143,6 +152,18 @@ func (s *Store) ListAuditLog(ctx context.Context, user *auth.User, f AuditFilter
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// insertAuditDetailTx records one AuditLogDetails line inside tx.
+// FIX-12 SW-M09: the sale path calls this for every invoice line, so the
+// audit detail page shows qty/price before-after instead of always
+// "لا توجد بنود تفصيلية لهذا السجل".
+func insertAuditDetailTx(tx *sql.Tx, logID int64, d AuditDetail) error {
+	_, err := tx.Exec(`INSERT INTO AuditLogDetails(LogID,ProductID,ProductName,QuantityBefore,QuantityAfter,QuantityChange,PriceBefore,PriceAfter,LineTotal,Notes)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`, logID, d.ProductID, d.ProductName,
+		int64(d.QuantityBefore), int64(d.QuantityAfter), int64(d.QuantityChange),
+		int64(d.PriceBefore), int64(d.PriceAfter), int64(d.LineTotal), d.Notes)
+	return err
 }
 
 // GetAuditLogDetails returns one audit entry plus its detail lines.
@@ -379,7 +400,10 @@ func (s *Store) RunSmartMonitor(ctx context.Context, user *auth.User) (int, erro
 			}
 			for _, h := range hits {
 				var logID int64
-				_ = tx.QueryRow(`SELECT LogID FROM AuditLog WHERE InvoiceNumber=? AND ActionType='cancel_invoice' ORDER BY LogID DESC LIMIT 1`, h.num).Scan(&logID)
+				// FIX-12 SW-H07: cancels are written as Arabic "إلغاء فاتورة"
+				// (domain_sales.go), so match that spelling too — the old
+				// English-only query never matched a live row.
+				_ = tx.QueryRow(`SELECT LogID FROM AuditLog WHERE InvoiceNumber=? AND ActionType IN ('cancel_invoice','إلغاء فاتورة') ORDER BY LogID DESC LIMIT 1`, h.num).Scan(&logID)
 				msg := fmt.Sprintf("إلغاء فاتورة رقم %d بمبلغ %s يتجاوز العتبة", h.num, money.FormatEGP(money.Cents(h.net)))
 				isNew, err := createAuditAlertTx(tx, logID, h.uname, "cancel_amount", msg, money.Cents(h.net), th.CancelAmount)
 				if err != nil {
@@ -519,11 +543,21 @@ func (s *Store) SmartReport(ctx context.Context, user *auth.User, kind, from, to
 			FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
 			GROUP BY h ORDER BY h`, from, to)
 	case "suspicious_users":
-		rows, err = s.DB.Query(`SELECT u.UserName, 
+		// FIX-12 SW-L07: exclude users with zero suspicious actions
+		// (zero cancels+returns AND zero discount in range) — the old
+		// query listed every user, including 0 / 0.00 rows. The WHERE
+		// repeats the SELECT-list subqueries; its 6 params follow the
+		// SELECT list's 6 in textual order.
+		rows, err = s.DB.Query(`SELECT u.UserName,
 			(SELECT COUNT(*) FROM Invoices WHERE IsCanceled=1 AND UserName=u.UserName AND substr(COALESCE(CanceledAt,InvoiceDate),1,10) BETWEEN ? AND ?)
 			+ (SELECT COUNT(*) FROM Returns WHERE UserName=u.UserName AND substr(ReturnDate,1,10) BETWEEN ? AND ?),
 			(SELECT COALESCE(SUM(Discount),0) FROM Invoices WHERE IsCanceled=0 AND UserName=u.UserName AND substr(InvoiceDate,1,10) BETWEEN ? AND ?)
-			FROM Users u ORDER BY 2 DESC, 3 DESC LIMIT 20`, from, to, from, to, from, to)
+			FROM Users u
+			WHERE ((SELECT COUNT(*) FROM Invoices WHERE IsCanceled=1 AND UserName=u.UserName AND substr(COALESCE(CanceledAt,InvoiceDate),1,10) BETWEEN ? AND ?)
+			+ (SELECT COUNT(*) FROM Returns WHERE UserName=u.UserName AND substr(ReturnDate,1,10) BETWEEN ? AND ?)) > 0
+			OR (SELECT COALESCE(SUM(Discount),0) FROM Invoices WHERE IsCanceled=0 AND UserName=u.UserName AND substr(InvoiceDate,1,10) BETWEEN ? AND ?) > 0
+			ORDER BY 2 DESC, 3 DESC LIMIT 20`,
+			from, to, from, to, from, to, from, to, from, to, from, to)
 	case "cashier_compare":
 		rows, err = s.DB.Query(`SELECT COALESCE(UserName,'') u, COUNT(*), COALESCE(SUM(NetAmount),0)
 			FROM Invoices WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?

@@ -168,8 +168,9 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, msg string) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": msg})
 		return
 	}
-	w.WriteHeader(http.StatusForbidden)
-	_ = s.render(w, r, "error.html", Page{Title: "غير مسموح", Error: msg})
+	// FIX-12 SW-L02: renderStatus writes the header itself — writing it
+	// here first produced "superfluous response.WriteHeader" log spam.
+	_ = s.renderStatus(w, r, "error.html", Page{Title: "غير مسموح", Error: msg}, http.StatusForbidden)
 }
 
 // Page is the common template data.
@@ -194,8 +195,12 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, p P
 	return s.renderStatus(w, r, name, p, http.StatusOK)
 }
 
-// renderStatus renders a page with an explicit HTTP status code.
-func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, name string, p Page, status int) error {
+// renderToBuffer executes a template into a buffer without writing
+// anything to the ResponseWriter, so callers can fall back to another
+// page when the first template fails (R23-C-F2: a template that needs
+// Data must never turn an Arabic error message into a generic 500
+// after the header is already sent).
+func (s *Server) renderToBuffer(r *http.Request, name string, p Page) ([]byte, error) {
 	u := CurrentUser(r)
 	p.User = u
 	if p.StoreName == "" {
@@ -218,20 +223,29 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, name strin
 			p.PendingEvidence = n
 		}
 	}
+	var buf bytes.Buffer
+	if err := s.tmpl.ExecuteTemplate(&buf, name, p); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// renderStatus renders a page with an explicit HTTP status code.
+func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, name string, p Page, status int) error {
 	// FIX-1 H3: render into a buffer first. Executing straight to the
 	// ResponseWriter sends a 200 header before a template error surfaces,
 	// so a broken page used to answer 200 with an empty body and the error
 	// was silently discarded by every `_ = s.render(...)` caller. On
 	// failure log the error and answer 500 with no partial body.
-	var buf bytes.Buffer
-	if err := s.tmpl.ExecuteTemplate(&buf, name, p); err != nil {
+	buf, err := s.renderToBuffer(r, name, p)
+	if err != nil {
 		LogErr(r, err)
 		http.Error(w, "خطأ في عرض الصفحة", http.StatusInternalServerError)
 		return err
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_, err := w.Write(buf.Bytes())
+	_, err = w.Write(buf)
 	return err
 }
 

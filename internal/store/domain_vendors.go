@@ -24,9 +24,11 @@
 //     resolved as: yes, cash out, consistent with C-03/V-08).
 //     Purchase invoice number: PI-YYYYMMDDHHMMSS.
 //   - Vendor payment: amount > 0, never above the vendor balance
-//     (strictly; no +0.01 tolerance — task decision), BalanceBefore/After
-//     recorded, cash -> CashBox 'out' + drawer gate, non-cash never
-//     touches the drawer (V-08).
+//     plus a 1-qirsh tolerance (FIX-12 SW-L01: amount <= balance + 0.01
+//     is allowed; the 1-cent excess is absorbed and the balance clamps
+//     at 0, never negative), BalanceBefore/After recorded, cash ->
+//     CashBox 'out' + drawer gate, non-cash never touches the drawer
+//     (V-08).
 package store
 
 import (
@@ -178,6 +180,17 @@ func (s *Store) DeleteVendor(ctx context.Context, user *auth.User, id int64) err
 		}
 		if nb > 0 {
 			return fmt.Errorf("لا يمكن حذف مورد لديه دفعات مخزون مسجلة (%d دفعة)", nb)
+		}
+		// FIX-12 SW-H01: open payables also reference the vendor —
+		// refuse while any payable is open/partial, or the payable
+		// would be orphaned with a dangling PartyID. Paid/cancelled
+		// payables are history and do not block the delete.
+		var npay int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM Payables WHERE Kind='vendor' AND PartyID=? AND Status IN ('open','partial')`, id).Scan(&npay); err != nil {
+			return err
+		}
+		if npay > 0 {
+			return fmt.Errorf("لا يمكن حذف مورد لديه مستحقات مفتوحة (%d مستحق)", npay)
 		}
 		if _, err := tx.Exec(`DELETE FROM Vendors WHERE VendorID=?`, id); err != nil {
 			return err
@@ -450,7 +463,14 @@ func (s *Store) CreatePurchase(ctx context.Context, user *auth.User, in Purchase
 		if ln.PurchasePrice <= 0 {
 			return 0, "", fmt.Errorf("سطر %d: الكمية وسعر الشراء يجب أن يكونا أكبر من صفر", i+1)
 		}
-		total += money.MulQty(ln.PurchasePrice, ln.Qty)
+		lineTotal, err := money.MulQty(ln.PurchasePrice, ln.Qty)
+		if err != nil {
+			return 0, "", err
+		}
+		total, err = money.AddChecked(total, lineTotal)
+		if err != nil {
+			return 0, "", err
+		}
 	}
 	if total <= 0 {
 		return 0, "", errors.New("إجمالي فاتورة الشراء يجب أن يكون أكبر من صفر")
@@ -508,7 +528,10 @@ func (s *Store) CreatePurchase(ctx context.Context, user *auth.User, in Purchase
 			} else if err != nil {
 				return err
 			}
-			lineTotal := money.MulQty(ln.PurchasePrice, ln.Qty)
+			lineTotal, err := money.MulQty(ln.PurchasePrice, ln.Qty)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.Exec(`INSERT INTO PurchaseInvoiceDetails(PurchaseID,ProductID,ProductName,Quantity,PurchasePrice,TotalPrice,BatchNumber,ExpiryDate)
 				VALUES(?,?,?,?,?,?,?,?)`, purchaseID, ln.ProductID, prodName, int64(ln.Qty), int64(ln.PurchasePrice), int64(lineTotal),
 				strings.TrimSpace(ln.BatchNumber), strings.TrimSpace(ln.ExpiryDate)); err != nil {
@@ -633,7 +656,11 @@ func (s *Store) PayVendor(ctx context.Context, user *auth.User, vendorID int64, 
 		} else if err != nil {
 			return err
 		}
-		if amount > money.Cents(balance) {
+		// FIX-12 SW-L01: 1-qirsh tolerance — a payment up to balance +
+		// 0.01 is allowed (the 1-cent excess is absorbed; the balance
+		// clamps at 0 and never goes negative). Paying more than
+		// balance + 0.01 is still refused.
+		if amount > money.Cents(balance)+money.Cents(1) {
 			return fmt.Errorf("لا يمكن سداد مبلغ أكبر من مديونية المورد (%s) — الدفع الزائد مرفوض",
 				money.FormatEGP(money.Cents(balance)))
 		}
@@ -665,6 +692,11 @@ func (s *Store) PayVendor(ctx context.Context, user *auth.User, vendorID int64, 
 			}
 		}
 		balanceAfter = money.Cents(balance) - amount
+		if balanceAfter < 0 {
+			// SW-L01 tolerance: the 1-cent excess over the balance is
+			// absorbed — the balance clamps at 0, never negative.
+			balanceAfter = 0
+		}
 		now := Now()
 		if _, err := tx.Exec(`INSERT INTO VendorPayments(VendorID,PurchaseID,Amount,PaymentMethod,PaymentDate,UserID,UserName,ShiftID,BalanceBefore,BalanceAfter,Notes)
 			VALUES(?,?,?,?,?,?,?, ?,?,?,?)`, vendorID, nullablePurchase(purchaseID), int64(amount), method, now,

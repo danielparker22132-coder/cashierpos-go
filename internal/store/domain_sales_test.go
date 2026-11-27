@@ -253,14 +253,16 @@ func TestB1SaleDiscountsAndPriceEdit(t *testing.T) {
 	// FIX-2 M-3: the capped discount leaves a net of 0, which is below
 	// BuyPrice, so the sale needs AllowBelowCost (the capping behaviour
 	// itself is unchanged: net 0, discount 2000).
-	b1OpenShiftFor(t, s, env.sup)
-	res, err := s.CreateInvoice(env.ctx, env.sup, CreateInvoiceInput{
+	// FIX-12 SW-M10 (§15 row 17): the supervisor no longer holds
+	// PermApproveBelowCost, so this capping shape is exercised as admin.
+	b1OpenShiftFor(t, s, env.admin)
+	res, err := s.CreateInvoice(env.ctx, env.admin, CreateInvoiceInput{
 		CustomerID: 1, SaleType: "retail", PaymentMethod: "Cash", InvoiceDiscount: 500,
 		AllowBelowCost: true,
 		Lines:          []SaleLineInput{{ProductID: p.ID, Qty: 1000, ItemDiscount: 99999}},
 	})
 	if err != nil {
-		t.Fatalf("supervisor discount sale: %v", err)
+		t.Fatalf("admin discount sale: %v", err)
 	}
 	// Line gross 2000, item discount capped at 2000; the invoice discount
 	// is then capped at gross - item discounts = 0, so net is 0.
@@ -268,6 +270,7 @@ func TestB1SaleDiscountsAndPriceEdit(t *testing.T) {
 		t.Fatalf("capped discount result = %+v", res)
 	}
 	// Cashier custom price refused; admin custom price allowed.
+	// (Admin shift already open above.)
 	_, err = s.CreateInvoice(env.ctx, env.cashier, CreateInvoiceInput{
 		CustomerID: 1, SaleType: "retail", PaymentMethod: "Cash",
 		Lines: []SaleLineInput{{ProductID: p.ID, Qty: 1000, UnitPrice: 2500}},
@@ -275,7 +278,6 @@ func TestB1SaleDiscountsAndPriceEdit(t *testing.T) {
 	if err == nil {
 		t.Fatal("cashier price edit should be refused")
 	}
-	b1OpenShiftFor(t, s, env.admin)
 	res, err = s.CreateInvoice(env.ctx, env.admin, CreateInvoiceInput{
 		CustomerID: 1, SaleType: "retail", PaymentMethod: "Cash",
 		Lines: []SaleLineInput{{ProductID: p.ID, Qty: 1000, UnitPrice: 1500}},
@@ -601,10 +603,12 @@ func TestFix1_BelowCostRefusedAndAllowed(t *testing.T) {
 	_ = res
 }
 
-// TestFix3_BelowCostNeedsPermission (FIX-3 H2): the below-cost flag is
-// an approval, not a self-confirmation. A cashier passing
-// AllowBelowCost is refused even with a valid below-cost sale; a
-// supervisor holding approve_below_cost is allowed.
+// TestFix3_BelowCostNeedsPermission (FIX-3 H2, amended by FIX-12 SW-M10):
+// the below-cost flag is an approval, not a self-confirmation. A cashier
+// passing AllowBelowCost is refused even with a valid below-cost sale; a
+// supervisor holding approve_below_cost WAS allowed — but §15 row 17 says
+// supervisor ❌, so the supervisor is now refused too and only
+// admin/manager may confirm a below-cost sale.
 func TestFix3_BelowCostNeedsPermission(t *testing.T) {
 	s := testStore(t)
 	env := b1SaleEnvSetup(t, s)
@@ -613,6 +617,7 @@ func TestFix3_BelowCostNeedsPermission(t *testing.T) {
 	sup := b2TestUser(t, s, "h2sup", "supervisor")
 	b1OpenShiftFor(t, s, cashier)
 	b1OpenShiftFor(t, s, sup)
+	b1OpenShiftFor(t, s, env.admin)
 	// Below cost via an ITEM DISCOUNT, not a lowered unit price: retail
 	// 2000 - discount 1500 = net 500 < BuyPrice 1000. (A lowered unit
 	// price would also need PermEditPrice, which the supervisor does
@@ -624,14 +629,24 @@ func TestFix3_BelowCostNeedsPermission(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "غير مسموح") {
 		t.Fatalf("cashier refusal = %v, want a permission error", err)
 	}
-	if _, err := s.CreateInvoice(env.ctx, sup, in); err != nil {
-		t.Fatalf("supervisor with AllowBelowCost: %v", err)
+	// FIX-12 SW-M10: supervisor is refused as well (§15 row 17).
+	if _, err := s.CreateInvoice(env.ctx, sup, in); err == nil {
+		t.Fatal("supervisor with AllowBelowCost should be refused")
+	} else if !strings.Contains(err.Error(), "غير مسموح") {
+		t.Fatalf("supervisor refusal = %v, want a permission error", err)
+	}
+	// Admin still holds the approval.
+	if _, err := s.CreateInvoice(env.ctx, env.admin, in); err != nil {
+		t.Fatalf("admin with AllowBelowCost: %v", err)
 	}
 	// Without the flag the below-cost sale is still refused for everyone
 	// (the FIX-2 net gate is untouched).
 	in.AllowBelowCost = false
 	if _, err := s.CreateInvoice(env.ctx, sup, in); err == nil {
 		t.Fatal("supervisor below-cost without the flag should still be refused")
+	}
+	if _, err := s.CreateInvoice(env.ctx, env.admin, in); err == nil {
+		t.Fatal("admin below-cost without the flag should still be refused")
 	}
 }
 
@@ -788,5 +803,46 @@ func TestFix2_BelowCostNetViaPromo(t *testing.T) {
 	}
 	if n := auditCount(t, s, "بيع بخسارة"); n != 1 {
 		t.Fatalf("below-cost audit rows = %d, want 1", n)
+	}
+}
+
+// --- FIX-18 (R18-A-L01) ---
+
+// TestFix18_CancelCreditInvoiceZeroesRemaining (R18-A-L01): canceling
+// a credit invoice must zero its RemainingAmount — the API used to
+// return remaining:3000 with is_canceled:true. PaidAmount stays as
+// the refund record (here 1000 on Visa, so no cash leg is posted).
+func TestFix18_CancelCreditInvoiceZeroesRemaining(t *testing.T) {
+	s := testStore(t)
+	env := b1SaleEnvSetup(t, s)
+	p := b1MustProduct(t, s, env.admin, "سكر")
+	custID := testCustomer(t, s, "عميل آجل")
+	b1OpenShiftFor(t, s, env.cashier)
+	// Credit sale: 2 units, paid 1000 Visa, remaining 3000.
+	res, err := s.CreateInvoice(env.ctx, env.cashier, CreateInvoiceInput{
+		CustomerID: custID, SaleType: "retail", PaymentMethod: "Visa", Paid: 1000,
+		Lines: []SaleLineInput{{ProductID: p.ID, Qty: 2000}},
+	})
+	if err != nil {
+		t.Fatalf("credit sale: %v", err)
+	}
+	if res.Remaining != 3000 {
+		t.Fatalf("remaining before cancel = %d, want 3000", res.Remaining)
+	}
+	if _, err := s.CancelInvoice(env.ctx, env.admin, res.InvoiceID, "فاتورة خاطئة"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	inv, err := s.GetInvoice(env.ctx, env.admin, res.InvoiceID)
+	if err != nil {
+		t.Fatalf("get invoice: %v", err)
+	}
+	if !inv.Summary.IsCanceled {
+		t.Fatal("invoice should be canceled")
+	}
+	if inv.Summary.Remaining != 0 {
+		t.Fatalf("remaining after cancel = %d, want 0", inv.Summary.Remaining)
+	}
+	if inv.Summary.Paid != 1000 {
+		t.Fatalf("paid after cancel = %d, want 1000 (kept as the refund record)", inv.Summary.Paid)
 	}
 }

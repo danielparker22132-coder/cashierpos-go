@@ -150,7 +150,14 @@ func (s *Store) CreateOnlineOrder(ctx context.Context, user *auth.User, in Onlin
 		if it.UnitPrice < 0 {
 			return nil, fmt.Errorf("صنف %d: سعر الوحدة لا يمكن أن يكون سالباً", i+1)
 		}
-		computed += money.MulQty(it.UnitPrice, it.Qty)
+		lineTotal, err := money.MulQty(it.UnitPrice, it.Qty)
+		if err != nil {
+			return nil, err
+		}
+		computed, err = money.AddChecked(computed, lineTotal)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if computed <= 0 {
 		return nil, errors.New("إجمالي الطلب الأونلاين يجب أن يكون أكبر من صفر")
@@ -271,14 +278,19 @@ func (s *Store) ListOnlineOrders(ctx context.Context, user *auth.User, status st
 		if err := rows.Scan(&o.ID, &o.CustomerName, &o.CustomerPhone, &itemsJSON, &total,
 			&o.Status, &o.PaymentStatus, &o.PaymentMethod, &o.EvidenceRef, &o.Notes,
 			&o.CreatedBy, &createdAt, &updatedAt); err != nil {
-			return nil, err
+			// FIX-26 R26-D-F1: never return the raw Scan error (it leaks
+			// column index/name); Arabic wrap, same pattern as
+			// scanOnlineOrder/GetOnlineOrder.
+			return nil, fmt.Errorf("طلب أونلاين %d: بيانات غير صالحة", o.ID)
 		}
 		o.Total = money.Cents(total)
 		o.CreatedAt = createdAt.String
 		o.UpdatedAt = updatedAt.String
 		if itemsJSON.String != "" {
 			if err := json.Unmarshal([]byte(itemsJSON.String), &o.Items); err != nil {
-				return nil, err
+				// FIX-26 R26-D-F1: same Arabic wrap as GetOnlineOrder
+				// (:118) — never return the raw json error.
+				return nil, fmt.Errorf("طلب أونلاين %d: أصناف غير صالحة", o.ID)
 			}
 		}
 		out = append(out, &o)

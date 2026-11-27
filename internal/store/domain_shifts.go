@@ -638,6 +638,19 @@ func (s *Store) GetShift(ctx context.Context, shiftID int64) (*Shift, error) {
 	return sh, err
 }
 
+// shiftSummaryAdd adds v to *dst with checked arithmetic (R23-E-F2):
+// a shift-summary total must refuse with the Arabic overflow message
+// instead of silently wrapping — the downstream ExpectedBalance
+// AddChecked chain cannot catch a wrap that already happened here.
+func shiftSummaryAdd(dst *money.Cents, v money.Cents) error {
+	nv, err := money.AddChecked(*dst, v)
+	if err != nil {
+		return err
+	}
+	*dst = nv
+	return nil
+}
+
 // shiftSummaryTx computes the live H-09 summary inside a transaction.
 // Cash sales come from at-sale Payments rows (Notes='دفعة عند البيع');
 // an invoice with no such rows falls back to its PaidAmount under its
@@ -676,7 +689,10 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 		invIDs = append(invIDs, id)
 		invMethod[id] = normMethod(method)
 		invPaid[id] = money.Cents(paid)
-		sum.TotalSales += money.Cents(net)
+		if err := shiftSummaryAdd(&sum.TotalSales, money.Cents(net)); err != nil {
+			invRows.Close()
+			return nil, err
+		}
 	}
 	invRows.Close()
 	sum.InvoiceCount = len(invIDs)
@@ -705,11 +721,20 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 			seenAtSale[invID] = true
 			switch normMethod(method) {
 			case "Cash":
-				sum.CashSales += money.Cents(amt)
+				if err := shiftSummaryAdd(&sum.CashSales, money.Cents(amt)); err != nil {
+					payRows.Close()
+					return nil, err
+				}
 			case "Visa":
-				sum.VisaSales += money.Cents(amt)
+				if err := shiftSummaryAdd(&sum.VisaSales, money.Cents(amt)); err != nil {
+					payRows.Close()
+					return nil, err
+				}
 			case "Vodafone Cash":
-				sum.VodafoneSales += money.Cents(amt)
+				if err := shiftSummaryAdd(&sum.VodafoneSales, money.Cents(amt)); err != nil {
+					payRows.Close()
+					return nil, err
+				}
 			}
 		}
 		payRows.Close()
@@ -719,6 +744,10 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 	// only has later debt-collection Payments rows must NOT fall
 	// back — its PaidAmount already includes those collections, and
 	// counting it as CashSales would double-count them.)
+	// FIX-20 R20-A-F1: a return's negative Payments row is NOT a
+	// payment — it must not kill the fallback, or the PaidAmount
+	// is lost from CashSales while the return's CashBox out leg
+	// still subtracts the same money (double subtraction).
 	hasAnyPayment := map[int64]bool{}
 	if len(invIDs) > 0 {
 		ph := strings.Repeat("?,", len(invIDs))
@@ -728,7 +757,7 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 			args[i] = id
 		}
 		anyRows, err := tx.Query(`SELECT DISTINCT InvoiceID FROM Payments
-			WHERE InvoiceID IN (`+ph+`)`, args...)
+			WHERE InvoiceID IN (`+ph+`) AND Amount >= 0`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -748,11 +777,17 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 		}
 		switch invMethod[id] {
 		case "Cash":
-			sum.CashSales += invPaid[id]
+			if err := shiftSummaryAdd(&sum.CashSales, invPaid[id]); err != nil {
+				return nil, err
+			}
 		case "Visa":
-			sum.VisaSales += invPaid[id]
+			if err := shiftSummaryAdd(&sum.VisaSales, invPaid[id]); err != nil {
+				return nil, err
+			}
 		case "Vodafone Cash":
-			sum.VodafoneSales += invPaid[id]
+			if err := shiftSummaryAdd(&sum.VodafoneSales, invPaid[id]); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// Debt collections (CustomerPayments stamped with this shift),
@@ -771,11 +806,20 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 		}
 		switch normMethod(method) {
 		case "Visa":
-			sum.VisaDebtCollection += money.Cents(amt)
+			if err := shiftSummaryAdd(&sum.VisaDebtCollection, money.Cents(amt)); err != nil {
+				collRows.Close()
+				return nil, err
+			}
 		case "Vodafone Cash":
-			sum.VodafoneDebtCollection += money.Cents(amt)
+			if err := shiftSummaryAdd(&sum.VodafoneDebtCollection, money.Cents(amt)); err != nil {
+				collRows.Close()
+				return nil, err
+			}
 		default:
-			sum.CashDebtCollection += money.Cents(amt)
+			if err := shiftSummaryAdd(&sum.CashDebtCollection, money.Cents(amt)); err != nil {
+				collRows.Close()
+				return nil, err
+			}
 		}
 	}
 	collRows.Close()
@@ -783,13 +827,13 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 	var retTotal sql.NullInt64
 	if err := tx.QueryRow(`SELECT COALESCE(SUM(TotalRefund),0) FROM Returns
 		WHERE ShiftID=? AND IsProcessed=1`, shiftID).Scan(&retTotal); err != nil {
-		return nil, err
+		return nil, sumScanErr(err)
 	}
 	sum.ReturnsTotal = money.Cents(retTotal.Int64)
 	// Expenses of this shift.
 	var expTotal sql.NullInt64
 	if err := tx.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Expenses WHERE ShiftID=?`, shiftID).Scan(&expTotal); err != nil {
-		return nil, err
+		return nil, sumScanErr(err)
 	}
 	sum.ExpensesTotal = money.Cents(expTotal.Int64)
 	// CashBox movements, classified by structural AutoKind (FIX-2 L1).
@@ -828,9 +872,24 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 			case "courier_collection":
 				// FIX-2 L1: courier cash is its own bucket (not
 				// manual CashIn) and enters ExpectedBalance below.
-				sum.CourierCollection += money.Cents(amt)
+				// R23-D-F1: checked accumulation — the CashBox-loop
+				// terms feed the checked ExpectedBalance chain at
+				// :995-1020, which cannot detect a wrap that already
+				// happened here, so each term must refuse on
+				// overflow instead of wrapping (legacy-poisoned
+				// rows included: the cap in cashBoxMoveTx only
+				// stops NEW absurd rows).
+				var err error
+				if sum.CourierCollection, err = money.AddChecked(sum.CourierCollection, money.Cents(amt)); err != nil {
+					cbRows.Close()
+					return nil, err
+				}
 			default:
-				sum.CashIn += money.Cents(amt)
+				var err error
+				if sum.CashIn, err = money.AddChecked(sum.CashIn, money.Cents(amt)); err != nil {
+					cbRows.Close()
+					return nil, err
+				}
 			}
 		case "out":
 			switch kind {
@@ -846,9 +905,22 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 					reason   string
 				}{money.Cents(amt), refInvID, reason})
 			default:
-				sum.CashOut += money.Cents(amt)
-				if reason == "سداد مورد نقدي" {
-					sum.VendorCashPaid += money.Cents(amt)
+				// R23-D-F1: checked accumulation (see 'in' above).
+				var err error
+				if sum.CashOut, err = money.AddChecked(sum.CashOut, money.Cents(amt)); err != nil {
+					cbRows.Close()
+					return nil, err
+				}
+				// FIX-12 SW-M06: PayVendor writes "سداد مورد نقدي — <name>"
+				// (and purchase-time cash "سداد مورد نقدي عند الشراء …"),
+				// so match by prefix — exact equality never matched and
+				// the sub-bucket was always 0. CashOut (and therefore
+				// ExpectedBalance) is unchanged: the row already counted.
+				if strings.HasPrefix(reason, "سداد مورد نقدي") {
+					if sum.VendorCashPaid, err = money.AddChecked(sum.VendorCashPaid, money.Cents(amt)); err != nil {
+						cbRows.Close()
+						return nil, err
+					}
 				}
 			}
 		}
@@ -865,10 +937,20 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 	sameShiftRefund := map[int64]money.Cents{}
 	for _, cr := range cancelRefunds {
 		if invShift, ok := cancelRefundInvoiceShift(tx, cr.refInvID, cr.reason); ok && invShift != shiftID {
-			sum.CashOut += cr.amt
+			// R23-D-F1: checked accumulation (see CashBox loop above).
+			var err error
+			if sum.CashOut, err = money.AddChecked(sum.CashOut, cr.amt); err != nil {
+				return nil, err
+			}
 		} else if ok {
 			if invID, ok2 := cancelRefundInvoiceID(tx, cr.refInvID, cr.reason); ok2 {
-				sameShiftRefund[invID] += cr.amt
+				// R23-D-F1: the per-invoice refund total feeds the
+				// PR2-H1 cap below; a wrapped total would corrupt
+				// the cap, so it is accumulated checked too.
+				var err error
+				if sameShiftRefund[invID], err = money.AddChecked(sameShiftRefund[invID], cr.amt); err != nil {
+					return nil, err
+				}
 			}
 			// An unidentifiable refund stays out of CashOut (the
 			// pre-FIX-2 behaviour) and contributes nothing to the cap.
@@ -897,7 +979,11 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 		if rl.refInvID > 0 {
 			legsByInvoice[rl.refInvID] = append(legsByInvoice[rl.refInvID], rl.amt)
 		} else {
-			sum.CashReturns += rl.amt
+			// R23-D-F1: checked accumulation (see CashBox loop above).
+			var err error
+			if sum.CashReturns, err = money.AddChecked(sum.CashReturns, rl.amt); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for invID, legs := range legsByInvoice {
@@ -906,14 +992,24 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 		if err := tx.QueryRow(`SELECT IsCanceled,COALESCE(ShiftID,0) FROM Invoices WHERE InvoiceID=?`,
 			invID).Scan(&canceled, &invShift); err != nil || canceled == 0 || invShift != shiftID {
 			for _, amt := range legs {
-				sum.CashReturns += amt
+				// R23-D-F1: checked accumulation (see CashBox loop above).
+				var err error
+				if sum.CashReturns, err = money.AddChecked(sum.CashReturns, amt); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}
 		// At-sale cash of this invoice — the cash that entered this
 		// drawer at sale time (see atSaleCashTx).
 		atSaleCash := atSaleCashTx(tx, invID)
-		cap := atSaleCash - sameShiftRefund[invID]
+		// R23-D-F1: checked subtraction — atSaleCash and the refund
+		// are both CashBox-derived, so a poisoned pair could wrap
+		// the plain subtraction; SubChecked refuses instead.
+		cap, cerr := money.SubChecked(atSaleCash, sameShiftRefund[invID])
+		if cerr != nil {
+			return nil, cerr
+		}
 		if cap < 0 {
 			cap = 0
 		}
@@ -921,7 +1017,13 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 			if cap >= amt {
 				cap -= amt // excluded: reverses excluded sale cash
 			} else {
-				sum.CashReturns += amt - cap
+				// amt > cap >= 0, so amt-cap is in [1, amt] and
+				// cannot overflow; the checked add below is the
+				// guard that matters.
+				var err error
+				if sum.CashReturns, err = money.AddChecked(sum.CashReturns, amt-cap); err != nil {
+					return nil, err
+				}
 				cap = 0
 			}
 		}
@@ -965,13 +1067,38 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 			refund := sameShiftRefund[invID]
 			var legsTotal money.Cents
 			for _, amt := range legsByInvoice[invID] {
-				legsTotal += amt
+				// R23-D-F1: checked accumulation — legsTotal feeds
+				// the addBack subtraction below.
+				var err error
+				if legsTotal, err = money.AddChecked(legsTotal, amt); err != nil {
+					return nil, err
+				}
 			}
-			if excess := refund - atSaleCash; excess > 0 {
-				sum.CashOut += excess
+			// R23-D-F1: checked subtractions — refund, atSaleCash
+			// and legsTotal are all CashBox-derived; a poisoned
+			// combination must refuse, not wrap the correction.
+			excess, cerr := money.SubChecked(refund, atSaleCash)
+			if cerr != nil {
+				return nil, cerr
 			}
-			if addBack := atSaleCash - refund - legsTotal; addBack > 0 {
-				sum.RetainedCanceledCash += addBack
+			if excess > 0 {
+				var err error
+				if sum.CashOut, err = money.AddChecked(sum.CashOut, excess); err != nil {
+					return nil, err
+				}
+			}
+			addBack, cerr := money.SubChecked(atSaleCash, refund)
+			if cerr != nil {
+				return nil, cerr
+			}
+			if addBack, cerr = money.SubChecked(addBack, legsTotal); cerr != nil {
+				return nil, cerr
+			}
+			if addBack > 0 {
+				var err error
+				if sum.RetainedCanceledCash, err = money.AddChecked(sum.RetainedCanceledCash, addBack); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -980,8 +1107,35 @@ func shiftSummaryTx(tx *sql.Tx, shiftID int64) (*ShiftSummary, error) {
 	}
 	// H-09. RetainedCanceledCash enters exactly once: it is drawer
 	// cash the canceled sale left behind, not a sale (PR4-L3).
-	sum.ExpectedBalance = sum.OpeningBalance + sum.CashSales + sum.RetainedCanceledCash + sum.CashDebtCollection +
-		sum.CourierCollection + sum.CashIn - sum.CashReturns - sum.CashOut - sum.ExpensesTotal
+	// R22-E-F2: checked addition — a stored (pre-cap) absurd opening
+	// must refuse with the Arabic overflow message, never wrap to a
+	// negative balance that closeShiftTx would persist as متوازن.
+	expected, err := money.AddChecked(sum.OpeningBalance, sum.CashSales)
+	if err != nil {
+		return nil, err
+	}
+	if expected, err = money.AddChecked(expected, sum.RetainedCanceledCash); err != nil {
+		return nil, err
+	}
+	if expected, err = money.AddChecked(expected, sum.CashDebtCollection); err != nil {
+		return nil, err
+	}
+	if expected, err = money.AddChecked(expected, sum.CourierCollection); err != nil {
+		return nil, err
+	}
+	if expected, err = money.AddChecked(expected, sum.CashIn); err != nil {
+		return nil, err
+	}
+	if expected, err = money.SubChecked(expected, sum.CashReturns); err != nil {
+		return nil, err
+	}
+	if expected, err = money.SubChecked(expected, sum.CashOut); err != nil {
+		return nil, err
+	}
+	if expected, err = money.SubChecked(expected, sum.ExpensesTotal); err != nil {
+		return nil, err
+	}
+	sum.ExpectedBalance = expected
 	return sum, nil
 }
 
@@ -1155,6 +1309,14 @@ func (s *Store) OpenShift(ctx context.Context, user *auth.User, opening money.Ce
 	if opening < 0 {
 		return 0, errors.New("رصيد غير صحيح")
 	}
+	// R22-E-F2: magnitude cap. A near-MaxInt64 opening used to be
+	// accepted and stored verbatim; the expected balance then wrapped
+	// negative on the first cash sale and close persisted the wrapped
+	// value as متوازن, while every cash drawer-gated operation on the
+	// shift failed with a raw SQLite overflow error.
+	if opening > money.MaxOpeningCents {
+		return 0, errors.New("رصيد الافتتاح كبير جداً — تجاوز الحد الأقصى المسموح به (100,000,000 ج.م)")
+	}
 	var shiftID int64
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		// Rollover first: a previous-day open shift auto-closes here.
@@ -1200,6 +1362,14 @@ func (s *Store) OpenShift(ctx context.Context, user *auth.User, opening money.Ce
 		}
 		now := Now()
 		if closedToday {
+			// R22-E-F2: a stored (pre-cap) absurd opening must not be
+			// re-activated by resume — the resumed shift could never
+			// summarise or close cleanly (its expected balance wraps),
+			// so refuse here with the same Arabic message instead of
+			// letting new sales land on a poisoned shift.
+			if money.Cents(closedOpening) > money.MaxOpeningCents {
+				return errors.New("رصيد الافتتاح المحفوظ كبير جداً — تجاوز الحد الأقصى المسموح به (100,000,000 ج.م)")
+			}
 			// Same-day resume (H-04): same shift, new session.
 			shiftID = closedID
 			if _, err := tx.Exec(`UPDATE Shifts SET Status='Open', IsOpen=1, CloseTime=NULL,
@@ -1557,6 +1727,10 @@ func (s *Store) DailyClose(ctx context.Context, user *auth.User, date string) (*
 		// with no Payments rows at all — an invoice whose PaidAmount
 		// already includes later debt collections must not have it
 		// counted again as at-sale cash.
+		// FIX-20 R20-A-F1: a return's negative Payments row is NOT
+		// a payment — it must not kill the fallback (same double
+		// subtraction as the shift summary: the fallback PaidAmount
+		// is lost from TotalCash while the return still subtracts).
 		hasAnyPayment := map[int64]bool{}
 		if len(invIDs) > 0 {
 			ph := strings.Repeat("?,", len(invIDs))
@@ -1566,7 +1740,7 @@ func (s *Store) DailyClose(ctx context.Context, user *auth.User, date string) (*
 				args[i] = id
 			}
 			anyRows, err := tx.Query(`SELECT DISTINCT InvoiceID FROM Payments
-				WHERE InvoiceID IN (`+ph+`)`, args...)
+				WHERE InvoiceID IN (`+ph+`) AND Amount >= 0`, args...)
 			if err != nil {
 				return err
 			}
@@ -1703,7 +1877,7 @@ func (s *Store) DailyClose(ctx context.Context, user *auth.User, date string) (*
 		var expTotal sql.NullInt64
 		if err := tx.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Expenses
 			WHERE substr(ExpenseDate,1,10)=?`, date).Scan(&expTotal); err != nil {
-			return err
+			return sumScanErr(err)
 		}
 		rep.TotalExpenses = money.Cents(expTotal.Int64)
 		// Cash returns actually paid out (CashBox auto-return 'out',
@@ -1902,6 +2076,69 @@ func (s *Store) DailyClose(ctx context.Context, user *auth.User, date string) (*
 				}
 			}
 		}
+		// FIX-23 R23-A-F2 (cross-day cancel): the two passes above
+		// only ever visit invoices SOLD today (the return-leg loop
+		// skips invDate != date, and canceledTodayRows selects
+		// substr(InvoiceDate,1,10)=date) — so a cancel refund dated
+		// this day for an invoice sold on ANOTHER day never entered
+		// CancelRefundExcess, and NetCash overstated by exactly
+		// that refund. The shift summary handles the analogous
+		// cross-shift case explicitly (FIX-2 H-1: a cross-shift
+		// refund is real cash out of THIS shift's drawer, so it
+		// enters CashOut in full) — DailyClose needs the same
+		// cross-day analogue, and the amount is the FULL refund
+		// dated today, not the same-day excess over at-sale cash:
+		// the at-sale cash was already counted on the SALE day
+		// (yesterday's TotalCash), so none of it is in today's
+		// TotalCash to net against — today's outflow is the whole
+		// refund. (Same-day: excess = refund - atSaleCash, because
+		// the sale is excluded from today's TotalCash and the
+		// addBack restores the retained at-sale part; cross-day
+		// there is no addBack to restore.) Return legs dated today
+		// for the same invoice are already counted in CashReturns
+		// by the invDate != date branch above, so adding the full
+		// refund here cannot double-count them. Candidates are
+		// the invoices behind this day's cancel_refund CashBox
+		// rows (structural RefInvoiceID, plus the legacy
+		// reason-resolved rows already in legacyRefundByInvoice);
+		// refundTodayTx answers 0 for any invoice whose refund
+		// rows are not dated this day, so no CanceledAt gate is
+		// needed, and invoices already handled by the same-day
+		// passes (handledDaily, or sold today) are skipped.
+		crossDayIDs := map[int64]bool{}
+		if crRows, err := tx.Query(`SELECT RefInvoiceID,Reason FROM CashBox
+			WHERE AutoKind='cancel_refund'`); err == nil {
+			type crRow struct {
+				refInvID int64
+				reason   string
+			}
+			var crList []crRow
+			for crRows.Next() {
+				var r crRow
+				if err := crRows.Scan(&r.refInvID, &r.reason); err != nil {
+					break
+				}
+				crList = append(crList, r)
+			}
+			crRows.Close()
+			for _, r := range crList {
+				if id, ok := cancelRefundInvoiceID(tx, r.refInvID, r.reason); ok {
+					crossDayIDs[id] = true
+				}
+			}
+		}
+		for id := range crossDayIDs {
+			if handledDaily[id] {
+				continue
+			}
+			_, invDate := invoiceCancelDates(tx, id)
+			if invDate == date {
+				continue
+			}
+			if refundToday := refundTodayTx(tx, id, legacyRefundByInvoice, date); refundToday > 0 {
+				rep.CancelRefundExcess += refundToday
+			}
+		}
 		// Profit: unified definition (FIX-1 M1) — same allocated
 		// per-line profit as InvoiceProfit (promo, manual invoice
 		// discount and FreeCost subtracted), net of returns below.
@@ -1960,8 +2197,22 @@ func (s *Store) DailyClose(ctx context.Context, user *auth.User, date string) (*
 				continue
 			}
 			if !pr.canceled.Valid || pr.canceled.Int64 == 0 {
-				profit -= money.Cents(pr.refund) - money.MulQty(money.Cents(pr.buy), money.Qty(pr.qty))
-				profit += money.Cents(pr.voidedCost)
+				cost, cerr := money.MulQty(money.Cents(pr.buy), money.Qty(pr.qty))
+				if cerr != nil {
+					return cerr
+				}
+				term, cerr := money.SubChecked(money.Cents(pr.refund), cost)
+				if cerr != nil {
+					return cerr
+				}
+				profit, cerr = money.SubChecked(profit, term)
+				if cerr != nil {
+					return cerr
+				}
+				profit, cerr = money.AddChecked(profit, money.Cents(pr.voidedCost))
+				if cerr != nil {
+					return cerr
+				}
 			}
 		}
 		rep.TotalProfit = profit
@@ -1979,7 +2230,7 @@ func (s *Store) DailyClose(ctx context.Context, user *auth.User, date string) (*
 		var diffSum sql.NullInt64
 		if err := tx.QueryRow(`SELECT COALESCE(SUM(DifferenceAmount),0) FROM Shifts
 			WHERE ShiftDate=? AND DifferenceAmount IS NOT NULL`, date).Scan(&diffSum); err != nil {
-			return err
+			return sumScanErr(err)
 		}
 		rep.CashDifference = money.Cents(diffSum.Int64)
 		return nil
@@ -2047,6 +2298,31 @@ func (s *Store) TopProducts(ctx context.Context, user *auth.User, from, to strin
 		row.Revenue += ln.Total
 		row.Profit += ln.Profit
 	}
+	// FIX-12 SW-H06: returns remove their profit, exactly like
+	// DailyClose — without this a returned product keeps its full
+	// sale profit in the top-products ranking.
+	// FIX-17 SW2-L01: returns remove their qty and revenue too, so
+	// the row is NET on every column (gross qty/revenue beside net
+	// profit implied two different unit counts).
+	if adj, err := s.returnProfitAdjustments(ctx, from, to, ""); err != nil {
+		return nil, err
+	} else {
+		for pid, effect := range adj.byProduct {
+			if row, ok := byProd[pid]; ok {
+				row.Profit -= effect
+			}
+		}
+		for pid, qty := range adj.byProductQty {
+			if row, ok := byProd[pid]; ok {
+				row.Qty -= qty
+			}
+		}
+		for pid, refund := range adj.byProductRefund {
+			if row, ok := byProd[pid]; ok {
+				row.Revenue -= refund
+			}
+		}
+	}
 	out := make([]*DailyTopProductRow, 0, len(order))
 	for _, pid := range order {
 		out = append(out, byProd[pid])
@@ -2083,7 +2359,7 @@ func (s *Store) BestCashiers(ctx context.Context, user *auth.User, from, to stri
 		WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
 		GROUP BY UserName ORDER BY 3 DESC`, from, to)
 	if err != nil {
-		return nil, err
+		return nil, sumScanErr(err)
 	}
 	defer rows.Close()
 	var out []*CashierRow
@@ -2091,12 +2367,12 @@ func (s *Store) BestCashiers(ctx context.Context, user *auth.User, from, to stri
 		var r CashierRow
 		var total int64
 		if err := rows.Scan(&r.UserName, &r.InvoiceCount, &total); err != nil {
-			return nil, err
+			return nil, sumScanErr(err)
 		}
 		r.TotalSales = money.Cents(total)
 		out = append(out, &r)
 	}
-	return out, rows.Err()
+	return out, sumScanErr(rows.Err())
 }
 
 // PeakHourRow is one row of the peak-hours report.
@@ -2119,7 +2395,7 @@ func (s *Store) PeakHours(ctx context.Context, user *auth.User, from, to string)
 		WHERE IsCanceled=0 AND substr(InvoiceDate,1,10) BETWEEN ? AND ?
 		GROUP BY H ORDER BY H`, from, to)
 	if err != nil {
-		return nil, err
+		return nil, sumScanErr(err)
 	}
 	defer rows.Close()
 	var out []*PeakHourRow
@@ -2127,12 +2403,12 @@ func (s *Store) PeakHours(ctx context.Context, user *auth.User, from, to string)
 		var r PeakHourRow
 		var total int64
 		if err := rows.Scan(&r.Hour, &r.InvoiceCount, &total); err != nil {
-			return nil, err
+			return nil, sumScanErr(err)
 		}
 		r.TotalSales = money.Cents(total)
 		out = append(out, &r)
 	}
-	return out, rows.Err()
+	return out, sumScanErr(rows.Err())
 }
 
 // ExpiryAlertRow is one row of the expiry-alerts report.

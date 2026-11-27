@@ -141,8 +141,8 @@ func TestFix3Lane1_RecordCashCountStoresUserID(t *testing.T) {
 }
 
 func TestFix3Lane1_InvoiceForbidden(t *testing.T) {
-	// M4: cashier/warehouse read only their own invoices;
-	// admin/manager/supervisor read any.
+	// M4: cashier reads only their own invoices; admin/manager/supervisor
+	// read any. FIX-17 SW2-L10: warehouse reads any invoice view-only.
 	s := testStore(t)
 	env := b1SaleEnvSetup(t, s)
 	p := b1MustProduct(t, s, env.admin, "سكر")
@@ -153,8 +153,10 @@ func TestFix3Lane1_InvoiceForbidden(t *testing.T) {
 	if _, err := s.GetInvoice(env.ctx, otherCash, res.InvoiceID); !errors.Is(err, ErrInvoiceForbidden) {
 		t.Fatalf("other cashier GetInvoice: want ErrInvoiceForbidden, got %v", err)
 	}
-	if _, err := s.GetInvoice(env.ctx, wh, res.InvoiceID); !errors.Is(err, ErrInvoiceForbidden) {
-		t.Fatalf("warehouse GetInvoice: want ErrInvoiceForbidden, got %v", err)
+	// FIX-17 SW2-L10 (parent ruling, §15 row 25): warehouse now views any
+	// invoice read-only; cashier stays own-only.
+	if _, err := s.GetInvoice(env.ctx, wh, res.InvoiceID); err != nil {
+		t.Fatalf("warehouse GetInvoice: want success (view-only), got %v", err)
 	}
 	if _, err := s.GetInvoice(env.ctx, env.sup, res.InvoiceID); err != nil {
 		t.Fatalf("supervisor GetInvoice: %v", err)

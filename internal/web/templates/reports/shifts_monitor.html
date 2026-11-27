@@ -7,6 +7,7 @@
 <label>إلى <input type="date" name="to" value="{{.Data.To}}"></label>
 <button type="submit">عرض</button>
 </div></form>
+<p><a class="btn" href="/shifts/monitor/export?from={{.Data.From}}&to={{.Data.To}}">تصدير CSV</a></p>
 <h2>الشيفتات المفتوحة</h2>
 {{if .Data.OpenShifts}}<table><tr><th>الكاشير</th><th>التاريخ</th><th>وقت الفتح</th><th>رصيد الفتح</th><th>الدرج المتوقع</th></tr>
 {{range .Data.OpenShifts}}<tr><td>{{.UserName}}</td><td>{{.ShiftDate}}</td><td>{{.OpenTime}}</td><td class="num">{{egp .OpeningBalance}}</td><td class="num">{{egp .ExpectedDrawer}}</td></tr>{{end}}</table>

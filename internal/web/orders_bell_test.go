@@ -114,7 +114,12 @@ func TestOrdersBell_CountsAndEvidence(t *testing.T) {
 		t.Fatalf("JWT pending after PREPARED: want 2, got %d %v", code, data)
 	}
 	for _, st := range []string{"READY", "DELIVERED", "COMPLETED"} {
-		if code, data := e.postJSON(admin, "/api/staff/orders/"+itoa(orderID)+"/status", map[string]any{"status": st}); code != http.StatusOK {
+		// FIX-13 R13-M2: DELIVERED now requires a courier name.
+		body := map[string]any{"status": st}
+		if st == "DELIVERED" {
+			body["courier_name"] = "مندوب التوصيل"
+		}
+		if code, data := e.postJSON(admin, "/api/staff/orders/"+itoa(orderID)+"/status", body); code != http.StatusOK {
 			t.Fatalf("advance to %s: want 200, got %d %v", st, code, data)
 		}
 	}
@@ -253,7 +258,12 @@ func TestOrdersBell_CanceledEvidenceOrderDropsOut(t *testing.T) {
 	order2, _ := data["order"].(map[string]any)
 	oid2 := itoa(int64(order2["order_id"].(float64)))
 	for _, st := range []string{"PREPARED", "READY", "DELIVERED", "COMPLETED"} {
-		if code, data := e.postJSON(admin, "/api/staff/orders/"+oid2+"/status", map[string]any{"status": st}); code != http.StatusOK {
+		// FIX-13 R13-M2: DELIVERED now requires a courier name.
+		body := map[string]any{"status": st}
+		if st == "DELIVERED" {
+			body["courier_name"] = "مندوب التوصيل"
+		}
+		if code, data := e.postJSON(admin, "/api/staff/orders/"+oid2+"/status", body); code != http.StatusOK {
 			t.Fatalf("advance to %s: want 200, got %d %v", st, code, data)
 		}
 	}

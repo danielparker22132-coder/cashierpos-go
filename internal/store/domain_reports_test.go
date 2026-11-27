@@ -88,9 +88,11 @@ func TestReportsBasic(t *testing.T) {
 	// Profit: inv1 lines (16000-2*5000)+(6000-1*4000)=6000+2000=8000; inv2 (12000-2*4000)=4000 → 12000
 	// minus inv1's manual invoice discount 2000 (FIX-1 M1: unified with
 	// InvoiceProfit, which subtracts PromoDiscount, the manual invoice
-	// discount and FreeCost) → 10000.
-	if int64(sales.TotalProfit) != 10000 {
-		t.Fatalf("sales profit = %d, want 10000", sales.TotalProfit)
+	// discount and FreeCost) → 10000, minus the seeded return's profit
+	// (FIX-12 SW-H06: refund 8000 − 1×buy 5000 = 3000, like DailyClose)
+	// → 7000.
+	if int64(sales.TotalProfit) != 7000 {
+		t.Fatalf("sales profit = %d, want 7000", sales.TotalProfit)
 	}
 	if len(sales.ByDay) != 1 || len(sales.ByPayment) != 1 || sales.ByPayment[0].Method != "Cash" {
 		t.Fatalf("sales breakdown = %+v / %+v", sales.ByDay, sales.ByPayment)
@@ -103,8 +105,8 @@ func TestReportsBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProfitReportFor: %v", err)
 	}
-	if int64(profit.TotalProfit) != 10000 || int64(profit.TotalSales) != 34000 {
-		t.Fatalf("profit = %+v, want sales 34000 profit 10000", profit)
+	if int64(profit.TotalProfit) != 7000 || int64(profit.TotalSales) != 34000 {
+		t.Fatalf("profit = %+v, want sales 34000 profit 7000 (SW-H06: minus return profit 3000)", profit)
 	}
 	if len(profit.BySaleType) != 2 {
 		t.Fatalf("profit by sale type = %+v, want 2", profit.BySaleType)

@@ -10,6 +10,7 @@
 <td>{{.Name}}</td><td>{{if eq .Location "cloud"}}سحابية{{else}}محلية{{end}}</td><td>{{.Size}}</td><td>{{.ModTime}}</td>
 <td><form method="post" action="/backup/restore" onsubmit="return confirm('استعادة {{.Name}}؟ سيتم استبدال قاعدة البيانات الحالية')">
 <input type="hidden" name="location" value="{{.Location}}"><input type="hidden" name="name" value="{{.Name}}">
+<label>للتأكيد اكتب «استعادة» <input name="confirm" autocomplete="off"></label>
 <button type="submit">استعادة</button></form></td>
 </tr>{{end}}</table>
 {{else}}<p>لا توجد نسخ بعد</p>{{end}}

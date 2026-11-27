@@ -115,7 +115,14 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := auth.Authenticate(s.Store.DB, req.Username, req.Password)
 	if err != nil {
-		apiErr(w, http.StatusUnauthorized, err)
+		// FIX-27 R27-E-F1 (auth audit): the same raw Authenticate
+		// driver error reached this JSON endpoint verbatim via
+		// apiErr (Users dropped -> "no such table: Users").
+		// Gate it like the HTML login render; safe Arabic
+		// messages (wrong password, empty fields, inactive
+		// account) pass through verbatim, status stays 401.
+		LogErr(r, err)
+		apiErr(w, http.StatusUnauthorized, errors.New(safeHTMLErr(err)))
 		return
 	}
 	if u.MustChangePassword {
@@ -128,7 +135,7 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := auth.SignJWT(s.jwtSecret, u.UserName, u.Role, 24*time.Hour)
 	if err != nil {
-		apiErr(w, http.StatusInternalServerError, err)
+		apiErrInternal(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -139,7 +146,7 @@ func (s *Server) handleAPIAuthLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIOrdersPendingCount(w http.ResponseWriter, r *http.Request) {
 	n, err := s.Store.PendingOrdersCount(r.Context(), CurrentUser(r))
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForStore(w, r, err, http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pendingCount": n})
@@ -148,7 +155,7 @@ func (s *Server) handleAPIOrdersPendingCount(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleAPIOrdersPendingEvidence(w http.ResponseWriter, r *http.Request) {
 	n, err := s.Store.PendingEvidenceCount(r.Context(), CurrentUser(r))
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForStore(w, r, err, http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pendingEvidence": n})
@@ -174,7 +181,7 @@ func orderJSON(o *store.OnlineOrder) map[string]any {
 func (s *Server) handleAPIOrdersAll(w http.ResponseWriter, r *http.Request) {
 	orders, err := s.Store.ListOnlineOrders(r.Context(), CurrentUser(r), r.URL.Query().Get("status"))
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForStore(w, r, err, http.StatusBadRequest)
 		return
 	}
 	out := make([]map[string]any, 0, len(orders))
@@ -192,7 +199,7 @@ func (s *Server) handleAPIOrderGet(w http.ResponseWriter, r *http.Request) {
 	}
 	o, err := s.Store.GetOnlineOrder(r.Context(), CurrentUser(r), id)
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForStore(w, r, err, http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "order": orderJSON(o)})
@@ -241,7 +248,7 @@ func (s *Server) handleAPIOrderCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	o, err := s.Store.CreateOnlineOrder(r.Context(), CurrentUser(r), in)
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForStore(w, r, err, http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "order": orderJSON(o)})
@@ -255,7 +262,7 @@ func (s *Server) handleAPIOrderResolveEvidence(w http.ResponseWriter, r *http.Re
 	}
 	o, err := s.Store.ResolveOrderEvidence(r.Context(), CurrentUser(r), id)
 	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+		apiErrForStore(w, r, err, http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "order": orderJSON(o)})
@@ -268,23 +275,89 @@ func (s *Server) handleAPIOrderSetStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req struct {
-		Status string `json:"status"`
+		Status      string `json:"status"`
+		CourierName string `json:"courier_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		apiErr(w, http.StatusBadRequest, errors.New("طلب غير صحيح"))
 		return
 	}
-	o, err := s.Store.SetOnlineOrderStatus(r.Context(), CurrentUser(r), id, req.Status)
-	if err != nil {
-		apiErr(w, http.StatusBadRequest, err)
+	// FIX-13 R13-M2: confirming a delivery REQUIRES a courier name.
+	// The 2026-11-19 redesign's invariant is that confirmation books
+	// the amount as DEBT on the courier; a confirmation with no courier
+	// books no debt, and the state machine refuses DELIVERED→DELIVERED,
+	// so no later call could ever book it. Refuse the transition
+	// before any status change — the order stays un-delivered.
+	if strings.ToUpper(strings.TrimSpace(req.Status)) == store.OrderDelivered &&
+		strings.TrimSpace(req.CourierName) == "" {
+		apiErr(w, http.StatusBadRequest, errors.New("اسم المندوب مطلوب لتأكيد التوصيل — بدونه لا يمكن تسجيل الدين"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "order": orderJSON(o)})
+	o, err := s.Store.SetOnlineOrderStatus(r.Context(), CurrentUser(r), id, req.Status)
+	if err != nil {
+		apiErrForStore(w, r, err, http.StatusBadRequest)
+		return
+	}
+	resp := map[string]any{"ok": true, "order": orderJSON(o)}
+	// FIX-12 SW-H04: confirming a delivery books the order amount as a
+	// DEBT on the courier (jony 2026-11-19 redesign). The courier's name
+	// travels with the confirmation call — FIX-13 R13-M2 refuses the
+	// transition without one, so by here a name is always present.
+	// Booking is idempotent — confirming twice books one debt. A booking
+	// failure never rewrites the status change that already committed; it
+	// is reported alongside the order instead.
+	if o.Status == store.OrderDelivered {
+		if name := strings.TrimSpace(req.CourierName); name != "" {
+			if debtID, err := s.Store.BookCourierDebtForOrder(r.Context(), CurrentUser(r), o.ID, name, o.Total); err != nil {
+				// FIX-25 Observation E: a driver error must not leak into
+				// the success body; other booking errors keep their
+				// safe Arabic text.
+				if isDriverErr(err) {
+					LogErr(r, err)
+					resp["courier_debt_error"] = "تعذّر تسجيل دين المندوب"
+				} else {
+					resp["courier_debt_error"] = err.Error()
+				}
+			} else {
+				resp["courier_debt_id"] = debtID
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleOrdersResolveEvidence is the HTML form version of the API
 // resolve: it redirects back to /orders with a notice. A refusal
 // answers 400 like the API path (FIX-6 R6-L4), not a 200 error page.
+// renderErrForStore is apiErrForStore for the HTML resolve-evidence
+// form (FIX-25 Observation E): denial -> 403 with the service text,
+// overflow -> 400 Arabic, "…غير موجود" -> 400 with that text (the
+// staff-API convention keeps a missing order at 400, not 404 —
+// accepted adjudication, re-review 25 lane C O2), driver error -> 500
+// with the generic message, any other store error -> 400 with its safe
+// Arabic text (e.g. "لا يمكن مراجعة دليل دفع طلب ملغى", asserted by
+// TestFix6).
+func (s *Server) renderErrForStore(w http.ResponseWriter, r *http.Request, err error) {
+	if isDenial(err) {
+		s.renderErrStatus(w, r, "طلبات المتجر", err, http.StatusForbidden)
+		return
+	}
+	if errors.Is(err, money.ErrOverflow) {
+		s.renderErrStatus(w, r, "طلبات المتجر", err, http.StatusBadRequest)
+		return
+	}
+	if isNotFoundSentinel(err) {
+		s.renderErrStatus(w, r, "طلبات المتجر", err, http.StatusBadRequest)
+		return
+	}
+	if isDriverErr(err) {
+		LogErr(r, err)
+		s.renderErrStatus(w, r, "طلبات المتجر", errString("حدث خطأ داخلي، حاول مرة أخرى"), http.StatusInternalServerError)
+		return
+	}
+	s.renderErrStatus(w, r, "طلبات المتجر", err, http.StatusBadRequest)
+}
+
 func (s *Server) handleOrdersResolveEvidence(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
 	if err != nil {
@@ -292,7 +365,7 @@ func (s *Server) handleOrdersResolveEvidence(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if _, err := s.Store.ResolveOrderEvidence(r.Context(), CurrentUser(r), id); err != nil {
-		s.renderErrStatus(w, r, "طلبات المتجر", err, http.StatusBadRequest)
+		s.renderErrForStore(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/orders?resolved=1", http.StatusSeeOther)
@@ -303,7 +376,13 @@ func (s *Server) handleOrdersPage(w http.ResponseWriter, r *http.Request) {
 	u := CurrentUser(r)
 	orders, err := s.Store.ListOnlineOrders(r.Context(), u, r.URL.Query().Get("status"))
 	if err != nil {
-		s.renderErr(w, r, "طلبات المتجر", err)
+		// FIX-26 R26-B-O1: a ListOnlineOrders driver error must not echo
+		// into the 200 error page. Keep the 200 status (renderErrForStore
+		// would answer 500) and show the generic message instead.
+		if isDriverErr(err) {
+			LogErr(r, err)
+		}
+		s.renderErr(w, r, "طلبات المتجر", errString(htmlStoreErrMsg(err)))
 		return
 	}
 	pending, _ := s.Store.PendingOrdersCount(r.Context(), u)

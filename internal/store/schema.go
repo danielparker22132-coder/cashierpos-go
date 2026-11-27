@@ -2,8 +2,8 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+	"log"
 )
 
 // Schema: all tables from FEATURE_MAP §0 + §18/§19 and the GAP-REPORT
@@ -521,6 +521,7 @@ CREATE TABLE IF NOT EXISTS NotificationSendLog (
 	UserName TEXT DEFAULT '',
 	EventKey TEXT DEFAULT '',
 	SentAt TEXT,
+	Status TEXT NOT NULL DEFAULT 'sent',
 	UNIQUE(UserName, EventKey)
 );
 CREATE TABLE IF NOT EXISTS Sessions (
@@ -622,6 +623,10 @@ func (s *Store) migrate() error {
 	_, _ = s.DB.Exec(`ALTER TABLE CashCounts ADD COLUMN CountedByUserID INTEGER NOT NULL DEFAULT 0`)
 	// FIX-3 M2: persisted last activity for the idle clock (survives restart).
 	_, _ = s.DB.Exec(`ALTER TABLE Sessions ADD COLUMN LastActivity TEXT`)
+	// FIX-12 SW-M13: send-log status (sent | skipped_disabled |
+	// skipped_duplicate) so a skip is never silent. Legacy rows default
+	// to 'sent'.
+	_, _ = s.DB.Exec(`ALTER TABLE NotificationSendLog ADD COLUMN Status TEXT NOT NULL DEFAULT 'sent'`)
 	// PR4-L3: stored total for sale cash retained from canceled
 	// invoices (the RetainedCanceledCash bucket).
 	_, _ = s.DB.Exec(`ALTER TABLE Shifts ADD COLUMN RetainedCanceledCashTotal INTEGER DEFAULT 0`)
@@ -813,34 +818,69 @@ func (s *Store) tableMissingFK(table, fromCol, refTable string) bool {
 // rebuildTable rebuilds one table with its new DDL (see ensurePurchaseFKs).
 // foreign_keys is a no-op inside a transaction, so it is disabled before
 // the transaction and re-enabled right after, even on failure.
+//
+// FIX-13 (coordinator, R13-M3 extension): the whole OFF → rebuild → ON
+// sequence holds ONE dedicated connection, like ResetDatabase — the
+// re-enable runs in a defer on that same connection, so every exit path
+// restores FK, and FK is VERIFIED actually ON afterwards. (The race window
+// the reset had cannot occur here — rebuildTable runs inside migrate()
+// at Open, before the server listens — but the ON-exec-failure exit path
+// is the same shape, so it gets the same guarantee. The
+// foreign_key_check runs on this same connection: the pool has
+// MaxOpenConns(1) and this function holds it.)
 func (s *Store) rebuildTable(j fkRebuild) error {
-	if _, err := s.DB.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
-		return err
-	}
-	err := s.Tx(context.Background(), func(tx *sql.Tx) error {
-		if _, err := tx.Exec(j.newDDL); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(fmt.Sprintf(`INSERT INTO %s_new(%s) SELECT %s FROM %s`,
-			j.table, j.columns, j.columns, j.table)); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, j.table)); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s_new RENAME TO %s`, j.table, j.table)); err != nil {
-			return err
-		}
-		return nil
-	})
-	if _, err2 := s.DB.Exec(`PRAGMA foreign_keys=ON`); err2 != nil {
-		return err2
-	}
+	ctx := context.Background()
+	conn, err := s.DB.Conn(ctx)
 	if err != nil {
 		return err
 	}
+	fkRestored := false
+	defer func() {
+		if !fkRestored {
+			if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+				log.Printf("MIGRATE: FAILED to re-enable foreign_keys after rebuild error: %v — FK enforcement may be OFF", err)
+			} else if on, verr := fkEnabled(ctx, conn); verr != nil || on != 1 {
+				log.Printf("MIGRATE: foreign_keys NOT verified ON after rebuild error (value=%d, err=%v) — FK enforcement may be OFF", on, verr)
+			}
+		}
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(j.newDDL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`INSERT INTO %s_new(%s) SELECT %s FROM %s`,
+		j.table, j.columns, j.columns, j.table)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, j.table)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s_new RENAME TO %s`, j.table, j.table)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Re-enable FK on this same connection and VERIFY it is really ON.
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		log.Printf("MIGRATE: FAILED to re-enable foreign_keys after rebuild: %v — FK enforcement may be OFF", err)
+		return err
+	}
+	if on, err := fkEnabled(ctx, conn); err != nil || on != 1 {
+		log.Printf("MIGRATE: foreign_keys NOT verified ON after rebuild (value=%d, err=%v)", on, err)
+		return fmt.Errorf("إعادة بناء الجدول %s لم تُعِد تفعيل المفاتيح الخارجية", j.table)
+	}
+	fkRestored = true
 	var violations int
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil {
 		return err
 	}
 	if violations > 0 {

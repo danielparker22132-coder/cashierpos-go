@@ -73,7 +73,7 @@ func testProductB2(t *testing.T, s *Store, name string, buy, retail money.Cents,
 func testSaleInvoice(t *testing.T, s *Store, user *auth.User, shiftID int64, number int64, productID int64,
 	qty money.Qty, unitPrice, buyPrice money.Cents, paid, remaining money.Cents, method string, customerID int64) int64 {
 	t.Helper()
-	total := money.MulQty(unitPrice, qty)
+	total := mustMulQty(unitPrice, qty)
 	res, err := s.DB.Exec(`INSERT INTO Invoices(InvoiceNumber,CustomerID,SaleType,TotalAmount,Discount,
 		PromoDiscount,NetAmount,PaidAmount,RemainingAmount,PaymentMethod,UserID,UserName,ShiftID,InvoiceDate,IsCanceled)
 		VALUES(?,?,'retail',?,0,0,?,?,?,?,?,?,?,?,0)`,

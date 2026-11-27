@@ -1,16 +1,16 @@
 {{template "chrome-top" .}}
 <h1>إعدادات القفل التلقائي</h1>
-<p>القفل التلقائي بعد الخمول (0 = معطل). المدة الخاصة بك تتغلب على المدة العامة</p>
+<p>القفل التلقائي بعد الخمول (0 = بلا مدة عامة). المدة العامة — عند ضبطها على قيمة أكبر من 0 — تطبق على الجميع؛ وإذا كانت 0 (بلا مدة عامة) تُستخدم مدة كل مستخدم الخاصة (فارغ = 15 دقيقة، 0 = بلا قفل)</p>
 <form method="post" class="form">
   {{if .Data.CanGlobal}}
-  <label>المدة العامة (دقيقة — 0 = معطل) <input type="number" name="global_minutes" value="{{.Data.Global}}" min="0" max="600"></label>
+  <label>المدة العامة (دقيقة — 0 = بلا مدة عامة، تُستخدم مدة كل مستخدم) <input type="number" name="global_minutes" value="{{.Data.Global}}" min="0" max="600"></label>
   {{else}}
-  <p>المدة العامة الحالية: <strong>{{.Data.Global}} دقيقة</strong> (0 = معطل) — يغيّرها المدير فقط من <a href="/settings">صفحة الإعدادات</a></p>
+  <p>المدة العامة الحالية: <strong>{{.Data.Global}} دقيقة</strong> (0 = بلا مدة عامة) — يغيّرها المدير فقط من <a href="/settings">صفحة الإعدادات</a></p>
   {{end}}
-  <label>مدتي الخاصة (دقيقة — اتركها فارغة لاتباع المدة العامة، 0 = معطل لي فقط)
-    <input type="number" name="own_minutes" value="{{.Data.OwnMinutes}}" min="0" max="600" placeholder="فارغ = المدة العامة">
+  <label>مدتي الخاصة (دقيقة — تُستخدم فقط عندما تكون المدة العامة 0 (بلا مدة عامة)؛ اتركها فارغة = 15 دقيقة، 0 = بلا قفل لي)
+    <input type="number" name="own_minutes" value="{{.Data.OwnMinutes}}" min="0" max="600" placeholder="فارغ = 15 دقيقة">
   </label>
-  {{if .Data.HasOwn}}<p>لديك مدة خاصة مفعّلة حالياً: {{.Data.OwnMinutes}} دقيقة</p>{{else}}<p>أنت تتبع المدة العامة حالياً</p>{{end}}
+  {{if .Data.HasOwn}}<p>لديك مدة خاصة مفعّلة حالياً: {{.Data.OwnMinutes}} دقيقة (تُستخدم فقط إذا كانت المدة العامة 0)</p>{{else}}<p>ليس لديك مدة خاصة — تُستخدم المدة العامة (أو 15 دقيقة إذا كانت بلا مدة عامة)</p>{{end}}
   <button type="submit" class="btn-primary">حفظ إعدادات القفل</button>
 </form>
 {{if .Data.CanGlobal}}

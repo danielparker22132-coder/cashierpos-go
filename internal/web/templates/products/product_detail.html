@@ -4,7 +4,7 @@
 <p>
   الباركود: <span class="num">{{$p.Barcode}}</span> |
   الفئة: {{$p.Category}} | المورد: {{$p.Supplier}} | الوحدة: {{$p.Unit}}<br>
-  سعر الشراء: {{egp $p.BuyPrice}} | القطاعي: {{egp $p.RetailPrice}} |
+  سعر الشراء: {{if index .Data "canViewProfit"}}{{egp $p.BuyPrice}}{{else}}—{{end}} | القطاعي: {{egp $p.RetailPrice}} |
   الجملة: {{egp $p.WholesalePrice}} | جملة الجملة: {{egp $p.BulkPrice}}<br>
   الكمية: <b>{{qty $p.Quantity}}</b> | الحد الأدنى: {{qty $p.MinQuantity}}
   {{if index .Data "lowStock"}} <b class="low-stock-text">— مخزون منخفض</b>{{end}}<br>
@@ -36,12 +36,12 @@
 
 <h2>سجل حركة المخزون</h2>
 <table>
-  <thead><tr><th>التاريخ</th><th>النوع</th><th>الكمية</th><th>سعر الشراء</th><th>ملاحظات</th></tr></thead>
+  <thead><tr><th>التاريخ</th><th>النوع</th><th>الكمية</th>{{if index .Data "canViewProfit"}}<th>سعر الشراء</th>{{end}}<th>ملاحظات</th></tr></thead>
   <tbody>
   {{range $m := index .Data "movements"}}
-    <tr><td>{{$m.Date}}</td><td>{{$m.Type}}</td><td class="num">{{qty $m.Quantity}}</td><td class="num">{{egp $m.BuyPrice}}</td><td>{{$m.Notes}}</td></tr>
+    <tr><td>{{$m.Date}}</td><td>{{$m.Type}}</td><td class="num">{{qty $m.Quantity}}</td>{{if index $.Data "canViewProfit"}}<td class="num">{{egp $m.BuyPrice}}</td>{{end}}<td>{{$m.Notes}}</td></tr>
   {{else}}
-    <tr><td colspan="5">لا توجد حركات مسجلة</td></tr>
+    <tr><td colspan="{{if index $.Data "canViewProfit"}}5{{else}}4{{end}}">لا توجد حركات مسجلة</td></tr>
   {{end}}
   </tbody>
 </table>

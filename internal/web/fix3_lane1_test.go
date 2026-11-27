@@ -30,10 +30,13 @@ func TestFix3Lane1_InvoiceScopingHTTP(t *testing.T) {
 	if code, body := e.get(cash2, fmt.Sprintf("/sales/%d", invID)); code != http.StatusForbidden {
 		t.Fatalf("cashier2 html get: want 403, got %d body=%q", code, truncate(body, 200))
 	}
-	// Warehouse: API 403 as well.
+	// FIX-17 SW2-L10 (§15 row 25): warehouse views any invoice read-only.
 	wh := e.warehouseClient()
-	if code, _ := e.getJSON(wh, fmt.Sprintf("/api/sales/%d", invID)); code != http.StatusForbidden {
-		t.Fatalf("warehouse api get: want 403, got %d", code)
+	if code, body := e.getJSON(wh, fmt.Sprintf("/api/sales/%d", invID)); code != http.StatusOK || body["ok"] != true {
+		t.Fatalf("warehouse api get: want 200 ok=true, got %d %v", code, body)
+	}
+	if code, _ := e.get(wh, fmt.Sprintf("/sales/%d", invID)); code != http.StatusOK {
+		t.Fatalf("warehouse html get: want 200, got %d", code)
 	}
 	// Supervisor and admin may read any invoice.
 	sup := e.supClient()

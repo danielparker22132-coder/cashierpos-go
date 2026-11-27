@@ -15,14 +15,20 @@
       <td class="num">{{egp .Remaining}}</td>
       <td class="num">{{.DueDate}}</td>
       <td>{{.Description}}</td>
-      <td>{{if eq .Status "paid"}}مسدَّد{{else if eq .Status "partial"}}مسدَّد جزئياً{{else}}مفتوح{{end}}</td>
+      <td>{{if eq .Status "paid"}}مسدَّد{{else if eq .Status "partial"}}مسدَّد جزئياً{{else if eq .Status "cancelled"}}ملغى{{else}}مفتوح{{end}}</td>
       <td>{{.CreatedBy}}</td>
       <td>
-        {{if ne .Status "paid"}}
+        {{if and (ne .Status "paid") (ne .Status "cancelled")}}
         <form method="post" action="/payables/{{.ID}}/settle" class="form inline">
           <input name="amount" inputmode="decimal" required size="8" placeholder="المبلغ">
           <select name="method"><option value="Cash">كاش</option><option value="Visa">فيزا</option><option value="Vodafone Cash">فودافون كاش</option></select>
           <button type="submit" class="btn-primary">سداد</button>
+        </form>
+        {{end}}
+        {{if and (can $.User "manage_payables") (ne .Status "paid") (ne .Status "cancelled")}}
+        <form method="post" action="/payables/{{.ID}}/cancel" class="form inline" onsubmit="return confirm('هل تريد إلغاء هذا المستحق؟ لن يتحرك أي مبلغ')">
+          <input name="reason" size="12" placeholder="سبب الإلغاء" required>
+          <button type="submit">إلغاء</button>
         </form>
         {{end}}
       </td>

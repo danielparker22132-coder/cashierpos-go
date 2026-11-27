@@ -4,7 +4,7 @@
   {{if can .User "edit_courier_debts"}}<a class="btn btn-primary" href="/courier-debts/new">{{template "icon-plus"}} دين مندوب جديد</a>{{end}}
 </p>
 {{if not (can .User "edit_courier_debts")}}
-<p class="hint">دورك (كاشير) قراءة فقط في هذه الشاشة — التعديل والسداد والحذف للمدير/المشرف</p>
+<p class="hint">دورك (كاشير) — يمكنك سداد دين المندوب عند استلام النقدية (يُسجَّل تحصيلاً باسمك)، أما إنشاء الدين وتعديله وحذفه فللمدير/المشرف</p>
 {{end}}
 <table>
   <thead><tr><th>اسم المندوب</th><th>المبلغ</th><th>مرجع الطلب</th><th>رقم الفاتورة</th><th>التاريخ</th><th>الحالة</th><th>سدّدها</th><th></th></tr></thead>
@@ -19,13 +19,17 @@
       <td>{{if eq .Status "paid"}}مسدَّد{{else}}مفتوح{{end}}</td>
       <td>{{.PaidBy}} {{.PaidAt}}</td>
       <td>
-        {{if can $.User "edit_courier_debts"}}
+        {{if or (can $.User "edit_courier_debts") $.Data.CanSettle}}
           {{if ne .Status "paid"}}
           <form method="post" action="/courier-debts/{{.ID}}/settle" class="form inline">
             <input name="amount" inputmode="decimal" required size="8" placeholder="المبلغ">
             <select name="method"><option value="Cash">كاش</option><option value="Visa">فيزا</option><option value="Vodafone Cash">فودافون كاش</option></select>
             <button type="submit" class="btn-primary">سداد</button>
           </form>
+          {{end}}
+        {{end}}
+        {{if can $.User "edit_courier_debts"}}
+          {{if ne .Status "paid"}}
           <a href="/courier-debts/{{.ID}}/edit">تعديل</a>
           {{end}}
           {{if ne .Status "paid"}}

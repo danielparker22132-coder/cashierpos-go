@@ -8,8 +8,8 @@
 <label>العنوان <input name="title" value="{{.Data.Notif.Title}}" required></label>
 <label>النص <textarea name="body" rows="3">{{.Data.Notif.Body}}</textarea></label>
 <label>الاستهداف <input name="audience" value="{{.Data.Notif.Audience}}" placeholder="all"></label>
-<p class="hint">all = كل المستخدمين · user:اسم_المستخدم = مستخدم محدد · product:123 = من باعوا المنتج سابقاً (العميل النقدي مستثنَد)</p>
-<label>معرّف المنتج المرتبط (اختياري) <input name="linked_product_id" value="{{if .Data.Notif.LinkedProductID}}{{.Data.Notif.LinkedProductID}}{{end}}"></label>
+<p class="hint">all = كل المستخدمين · user:اسم_المستخدم = مستخدم محدد · product:123 = من باعوا المنتج سابقاً من الموظفين (بما فيها مبيعات العميل النقدي)</p>
+<label>معرّف المنتج المرتبط (مطلوب لانخفاض السعر والعروض) <input name="linked_product_id" value="{{if .Data.Notif.LinkedProductID}}{{.Data.Notif.LinkedProductID}}{{end}}"></label>
 <label>وقت الإرسال (فارغ = الآن، صيغة YYYY-MM-DD HH:MM:SS) <input name="send_at" value="{{.Data.Notif.SendAt}}" dir="ltr"></label>
 <label>مفتاح الحدث لإزالة المكرر (اختياري) <input name="event_key" dir="ltr"></label>
 <button type="submit" class="btn-primary">{{if .Data.IsNew}}إنشاء وإرسال{{else}}حفظ التعديلات{{end}}</button>

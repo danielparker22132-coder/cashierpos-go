@@ -17,6 +17,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -126,8 +127,104 @@ func dateRange(r *http.Request) (string, string) {
 }
 
 func (s *Server) renderAdminErr(w http.ResponseWriter, r *http.Request, tmpl string, p Page, err error) {
-	p.Error = err.Error()
-	_ = s.render(w, r, tmpl, p)
+	p.Error = htmlStoreErrMsg(err)
+	// R23-C-F2: most admin templates dereference `.Data` unguarded
+	// (e.g. reports_dashboard.html:4 `.Data.TodaySales`), so rendering
+	// one with a nil Data turns the Arabic error into a generic 500
+	// `خطأ في عرض الصفحة`. Supply a zero-value Data of the template's
+	// expected type when the caller has none, and fall back to the
+	// generic error page — which needs no Data and always shows
+	// p.Error — if the template still fails to execute.
+	if p.Data == nil {
+		p.Data = adminErrZeroData(tmpl)
+	}
+	if buf, rerr := s.renderToBuffer(r, tmpl, p); rerr == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+		return
+	} else {
+		LogErr(r, rerr)
+	}
+	if buf, rerr := s.renderToBuffer(r, "error.html", Page{Title: p.Title, Error: p.Error}); rerr == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+		return
+	} else {
+		LogErr(r, rerr)
+	}
+	http.Error(w, "خطأ في عرض الصفحة", http.StatusInternalServerError)
+}
+
+// adminErrZeroData returns a zero-value Data of the type the named
+// admin template expects, so renderAdminErr can render the error page
+// with p.Error instead of failing on a nil-Data dereference (R23-C-F2).
+// Templates whose body is guarded by `{{if .Data}}` (notifications_manage,
+// users_list) need no Data, but a typed empty value is harmless there.
+// Unknown templates return nil: the error.html fallback still shows
+// the message.
+func adminErrZeroData(tmpl string) any {
+	switch tmpl {
+	case "notifications_inbox.html":
+		return notifInboxData{}
+	case "notifications_manage.html":
+		return []store.Notification{}
+	case "notifications_form.html":
+		return notifFormData{Types: store.ValidNotifTypes}
+	case "notifications_preview.html":
+		return struct {
+			Notif store.Notification
+			Sent  int
+		}{}
+	case "notifications_log.html":
+		return struct {
+			Notif store.Notification
+			Logs  []store.SendLogEntry
+		}{}
+	case "notifications_settings.html":
+		return []store.NotificationSetting{}
+	case "audit_list.html":
+		return auditListData{}
+	case "audit_detail.html":
+		return struct {
+			Entry   store.AuditEntry
+			Details []store.AuditDetail
+		}{}
+	case "audit_smart.html":
+		return struct {
+			Kind string
+			From string
+			To   string
+			Rows []store.SmartReportRow
+		}{}
+	case "users_list.html":
+		return []store.UserRecord{}
+	case "users_form.html":
+		return userFormData{Roles: []string{"admin", "manager", "cashier", "supervisor", "warehouse"}}
+	case "users_permissions.html":
+		return struct {
+			User    store.UserRecord
+			Summary []store.PermissionSummary
+		}{}
+	case "settings_page.html":
+		return settingsView{}
+	case "backup_list.html":
+		return struct {
+			Backups []store.BackupInfo
+			Cloud   store.CloudBackupSettings
+		}{}
+	case "reports_page.html":
+		return reportView{}
+	case "reports_dashboard.html":
+		return store.AdminDashboard{}
+	case "shifts_monitor.html":
+		return store.ShiftMonitor{}
+	case "attendance_list.html":
+		return store.AttendanceSummary{}
+	default:
+		return nil
+	}
 }
 
 // --- Notifications ---
@@ -154,8 +251,15 @@ func (s *Server) handleNotifRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "معرّف غير صحيح", http.StatusBadRequest)
 		return
 	}
+	// FIX-12 SW-L15: a failed mark-read (e.g. another user's row) must not
+	// pretend success — re-render the inbox with the error instead of a
+	// silent 303.
 	if err := s.Store.MarkNotificationRead(r.Context(), CurrentUser(r), id); err != nil {
-		LogErr(r, err)
+		u := CurrentUser(r)
+		items, _ := s.Store.ListInbox(r.Context(), u, 50)
+		unread, _ := s.Store.UnreadNotificationCount(r.Context(), u)
+		s.renderAdminErr(w, r, "notifications_inbox.html", Page{Title: "التنبيهات", ActiveNav: "notifications", UnreadNotif: unread, Data: notifInboxData{Items: items, Unread: unread}}, err)
+		return
 	}
 	http.Redirect(w, r, "/notifications", http.StatusSeeOther)
 }
@@ -567,7 +671,7 @@ func (s *Server) settingsReload(w http.ResponseWriter, r *http.Request, notice s
 	v, _ := s.settingsData(r)
 	p := Page{Title: "الإعدادات", Data: v, Notice: notice}
 	if err != nil {
-		p.Error = err.Error()
+		p.Error = htmlStoreErrMsg(err)
 		p.Notice = ""
 	}
 	_ = s.render(w, r, "settings_page.html", p)
@@ -608,6 +712,12 @@ func (s *Server) handleZonesPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSettingsZones(w http.ResponseWriter, r *http.Request) {
 	u := CurrentUser(r)
+	// FIX-12 SW-H12: r.Form is nil until ParseForm runs — without it every
+	// zone the admin entered was silently discarded.
+	if err := r.ParseForm(); err != nil {
+		s.settingsReload(w, r, "", err)
+		return
+	}
 	names := r.Form["zone_name"]
 	fees := r.Form["zone_fee"]
 	checked := map[string]bool{}
@@ -618,7 +728,15 @@ func (s *Server) handleSettingsZones(w http.ResponseWriter, r *http.Request) {
 	for i, name := range names {
 		var fee money.Cents
 		if i < len(fees) {
-			fee, _ = money.ParseMoney(fees[i])
+			var err error
+			fee, err = money.ParseMoney(fees[i])
+			if err != nil {
+				// Surface the parse error (e.g. a negative fee) instead
+				// of coercing it to 0 — the service-layer negative
+				// check must stay reachable.
+				s.settingsReload(w, r, "", err)
+				return
+			}
 		}
 		zones = append(zones, store.DeliveryZone{Name: strings.TrimSpace(name), Fee: fee, Active: checked[strconv.Itoa(i)]})
 	}
@@ -652,7 +770,7 @@ func (s *Server) handleSettingsScaleTest(w http.ResponseWriter, r *http.Request)
 	v, _ := s.settingsData(r)
 	v.ScaleTest = dec
 	if err != nil {
-		v.ScaleTestErr = err.Error()
+		v.ScaleTestErr = htmlStoreErrMsg(err)
 	}
 	_ = s.render(w, r, "settings_page.html", Page{Title: "الإعدادات", Data: v})
 }
@@ -671,10 +789,25 @@ func (s *Server) handleSettingsCloud(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSettingsMonitor(w http.ResponseWriter, r *http.Request) {
 	u := CurrentUser(r)
-	cancelAmt, _ := money.ParseMoney(r.FormValue("alert_threshold_cancel_amount"))
-	returnAmt, _ := money.ParseMoney(r.FormValue("alert_threshold_return_amount"))
-	discPct, _ := strconv.Atoi(r.FormValue("alert_threshold_discount_pct"))
-	err := s.Store.SaveMonitorThresholds(r.Context(), u, store.MonitorThresholds{
+	// FIX-12 SW-M07: surface parse errors instead of discarding them — a
+	// negative/invalid value used to coerce silently to 0 (disabled) with
+	// a false success notice, zeroing a previously saved threshold.
+	cancelAmt, err := money.ParseMoney(r.FormValue("alert_threshold_cancel_amount"))
+	if err != nil {
+		s.settingsReload(w, r, "", err)
+		return
+	}
+	returnAmt, err := money.ParseMoney(r.FormValue("alert_threshold_return_amount"))
+	if err != nil {
+		s.settingsReload(w, r, "", err)
+		return
+	}
+	discPct, err := strconv.Atoi(strings.TrimSpace(r.FormValue("alert_threshold_discount_pct")))
+	if err != nil {
+		s.settingsReload(w, r, "", errors.New("نسبة الخصم غير صحيحة"))
+		return
+	}
+	err = s.Store.SaveMonitorThresholds(r.Context(), u, store.MonitorThresholds{
 		CancelAmount: cancelAmt, DiscountPct: discPct, ReturnAmount: returnAmt,
 	})
 	s.settingsReload(w, r, "تم حفظ عتبات المراقبة الذكية", err)
@@ -723,8 +856,22 @@ func (s *Server) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 	}{Backups: list, Cloud: s.Store.GetCloudBackupSettings()}})
 }
 
+// restoreConfirmation is the exact value the restore form must submit in
+// its "confirm" field (FIX-12 SW-L14): the JS confirm() alone is not a
+// server-side confirmation, so a bare crafted POST must be refused.
+const restoreConfirmation = "استعادة"
+
 func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	u := CurrentUser(r)
+	if strings.TrimSpace(r.FormValue("confirm")) != restoreConfirmation {
+		list, _ := s.Store.ListBackups(r.Context(), u)
+		s.renderAdminErr(w, r, "backup_list.html", Page{Title: "النسخ الاحتياطي", Data: struct {
+			Backups []store.BackupInfo
+			Cloud   store.CloudBackupSettings
+		}{Backups: list, Cloud: s.Store.GetCloudBackupSettings()}},
+			errors.New(`للتأكيد اكتب "استعادة" في حقل التأكيد`))
+		return
+	}
 	location := strings.TrimSpace(r.FormValue("location"))
 	name := strings.TrimSpace(r.FormValue("name"))
 	if err := s.Store.RestoreBackup(r.Context(), u, location, name); err != nil {
@@ -849,6 +996,32 @@ func (s *Server) handleReportReturns(w http.ResponseWriter, r *http.Request) {
 	s.renderReport(w, r, "returns", reportView{From: from, To: to, Returns: rep}, err)
 }
 
+// apiErrForStoreCSV is apiErrForStore for the CSV download endpoint,
+// which answers with plain http.Error text instead of JSON (FIX-25
+// Observation E): denial -> 403, overflow -> 400 Arabic, "…غير موجود"
+// -> 404, driver error -> 500 generic (logged server-side), any other
+// store error -> 400 with its safe Arabic text.
+func apiErrForStoreCSV(w http.ResponseWriter, r *http.Request, err error) {
+	if isDenial(err) {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	if errors.Is(err, money.ErrOverflow) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if isNotFoundSentinel(err) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if isDriverErr(err) {
+		LogErr(r, err)
+		http.Error(w, "حدث خطأ داخلي، حاول مرة أخرى", http.StatusInternalServerError)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusBadRequest)
+}
+
 func (s *Server) handleReportExport(w http.ResponseWriter, r *http.Request) {
 	u := CurrentUser(r)
 	from, to := dateRange(r)
@@ -858,7 +1031,7 @@ func (s *Server) handleReportExport(w http.ResponseWriter, r *http.Request) {
 	}
 	data, filename, err := s.Store.ExportReportCSV(r.Context(), u, kind, from, to)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		apiErrForStoreCSV(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -905,7 +1078,7 @@ func (s *Server) handleAttendance(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiNotifUnreadCount(w http.ResponseWriter, r *http.Request) {
 	n, err := s.Store.UnreadNotificationCount(r.Context(), CurrentUser(r))
 	if err != nil {
-		WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		apiErrInternal(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unread": n})
@@ -914,7 +1087,7 @@ func (s *Server) apiNotifUnreadCount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiNotifList(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListInbox(r.Context(), CurrentUser(r), 50)
 	if err != nil {
-		WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		apiErrInternal(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "notifications": items})
@@ -927,7 +1100,7 @@ func (s *Server) apiNotifRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Store.MarkNotificationRead(r.Context(), CurrentUser(r), id); err != nil {
-		WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
+		apiErrForStore(w, r, err, http.StatusNotFound)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -936,7 +1109,7 @@ func (s *Server) apiNotifRead(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiBackupNow(w http.ResponseWriter, r *http.Request) {
 	res, err := s.Store.CreateBackup(r.Context(), CurrentUser(r))
 	if err != nil {
-		WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		apiErrInternal(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{
@@ -958,7 +1131,7 @@ func (s *Server) apiReportSales(w http.ResponseWriter, r *http.Request) {
 	}
 	rep, err := s.Store.SalesReportFor(r.Context(), CurrentUser(r), from, to)
 	if err != nil {
-		WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		apiErrForStore(w, r, err, http.StatusNotFound)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "report": rep})
@@ -967,7 +1140,7 @@ func (s *Server) apiReportSales(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiAuditUnreadCount(w http.ResponseWriter, r *http.Request) {
 	n, err := s.Store.UnreadAuditAlertsCount(r.Context(), CurrentUser(r))
 	if err != nil {
-		WriteJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": err.Error()})
+		apiErrForStore(w, r, err, http.StatusNotFound)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "unread": n})
@@ -976,7 +1149,7 @@ func (s *Server) apiAuditUnreadCount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiBackupList(w http.ResponseWriter, r *http.Request) {
 	list, err := s.Store.ListBackups(r.Context(), CurrentUser(r))
 	if err != nil {
-		WriteJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": err.Error()})
+		apiErrForStore(w, r, err, http.StatusNotFound)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "backups": list})

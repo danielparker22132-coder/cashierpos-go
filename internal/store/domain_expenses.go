@@ -77,6 +77,11 @@ func (s *Store) RegisterExpense(ctx context.Context, user *auth.User, descriptio
 // is closed (the close snapshot would freeze while the live recompute
 // moves); description/category-only edits stay allowed. A larger new
 // amount is drawer-gated against the balance the old amount frees.
+// FIX-18 O-C2 (parent ruling, 2026-11-26): updating an expense needs
+// the create perm AND (the expense is the caller's own OR the caller
+// is Manager/Admin — the view-all-cashbox holders, the same marker
+// DeleteExpense uses), so a cashier can no longer rewrite another
+// user's expense while being refused its delete.
 func (s *Store) UpdateExpense(ctx context.Context, user *auth.User, expenseID int64, description string, amount money.Cents, category string) error {
 	if user == nil {
 		return errors.New("يلزم تسجيل الدخول")
@@ -92,14 +97,21 @@ func (s *Store) UpdateExpense(ctx context.Context, user *auth.User, expenseID in
 	}
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		var oldDesc, oldCat string
-		var oldAmount, shiftID int64
-		err := tx.QueryRow(`SELECT Description,Amount,Category,ShiftID FROM Expenses WHERE ExpenseID=?`,
-			expenseID).Scan(&oldDesc, &oldAmount, &oldCat, &shiftID)
+		var oldAmount, shiftID, ownerID int64
+		err := tx.QueryRow(`SELECT Description,Amount,Category,ShiftID,UserID FROM Expenses WHERE ExpenseID=?`,
+			expenseID).Scan(&oldDesc, &oldAmount, &oldCat, &shiftID, &ownerID)
 		if err == sql.ErrNoRows {
 			return errors.New("المصروف غير موجود")
 		}
 		if err != nil {
 			return err
+		}
+		// FIX-18 O-C2: same ownership rule as DeleteExpense — a
+		// non-owner who is not Manager/Admin may not rewrite
+		// another user's expense. Checked before the closed-shift
+		// gate, exactly like DeleteExpense.
+		if ownerID != user.ID && !rbac.Can(user.Role, rbac.PermViewAllCashBox) {
+			return errors.New("غير مسموح — لا يمكن تعديل مصروف مستخدم آخر")
 		}
 		if amount != money.Cents(oldAmount) {
 			var isOpen int
@@ -129,6 +141,11 @@ func (s *Store) UpdateExpense(ctx context.Context, user *auth.User, expenseID in
 // DeleteExpense deletes an expense (E-03). Refused once its shift is
 // closed, so a frozen close snapshot can never disagree with the live
 // recompute.
+// FIX-17 expense-delete ruling (parent, 2026-11-26): deleting an
+// expense needs the create perm AND (the expense is the caller's own
+// OR the caller is Manager/Admin — the view-all-cashbox holders, the
+// same marker ListExpenses uses for "sees all users"). A cashier could
+// previously delete an admin-created expense.
 func (s *Store) DeleteExpense(ctx context.Context, user *auth.User, expenseID int64) error {
 	if user == nil {
 		return errors.New("يلزم تسجيل الدخول")
@@ -138,14 +155,17 @@ func (s *Store) DeleteExpense(ctx context.Context, user *auth.User, expenseID in
 	}
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		var desc string
-		var amount, shiftID int64
-		err := tx.QueryRow(`SELECT Description,Amount,ShiftID FROM Expenses WHERE ExpenseID=?`,
-			expenseID).Scan(&desc, &amount, &shiftID)
+		var amount, shiftID, ownerID int64
+		err := tx.QueryRow(`SELECT Description,Amount,ShiftID,UserID FROM Expenses WHERE ExpenseID=?`,
+			expenseID).Scan(&desc, &amount, &shiftID, &ownerID)
 		if err == sql.ErrNoRows {
 			return errors.New("المصروف غير موجود")
 		}
 		if err != nil {
 			return err
+		}
+		if ownerID != user.ID && !rbac.Can(user.Role, rbac.PermViewAllCashBox) {
+			return errors.New("غير مسموح — لا يمكن حذف مصروف مستخدم آخر")
 		}
 		var isOpen int
 		if err := tx.QueryRow(`SELECT IsOpen FROM Shifts WHERE ShiftID=?`, shiftID).Scan(&isOpen); err == nil && isOpen == 0 {

@@ -4,11 +4,18 @@
 // on a delivery that was not handed over). Fields: courier name, amount,
 // order/invoice reference, date, status.
 //   - VIEW: all four roles (view_courier_debts).
-//   - CREATE / UPDATE / SETTLE / DELETE: Manager/Admin/Supervisor only
-//     (edit_courier_debts). The CASHIER is READ-ONLY — any mutate/settle
-//     attempt by a cashier is refused in the service layer.
+//   - CREATE / UPDATE / DELETE: Manager/Admin/Supervisor only
+//     (edit_courier_debts). The CASHIER is READ-ONLY for those.
+//   - SETTLE: Manager/Admin/Supervisor AND any cashier receiving cash
+//     (FIX-12 SW-H03, parent ruling per jony's 2026-11-19 redesign: ANY
+//     cashier receiving cash clears the debt, recorded as a COLLECTION
+//     on the receiving cashier — courier + receiver recorded; §15 row 66
+//     is stale for the settle action).
+//   - DELIVERY (FIX-12 SW-H04): confirming an online order's delivery
+//     books the order amount as a debt on the courier (one debt per
+//     order — see BookCourierDebtForOrder).
 //   - Cash settlement requires an open shift + the drawer gate and writes
-//     a CashBox 'out' row? No — a courier debt settlement is money COMING
+//     a CashBox 'in' row? No — a courier debt settlement is money COMING
 //     IN (the courier hands cash over), so cash writes CashBox 'in'.
 //     (Direction: shop-owes-courier is a Payable; courier-owes-shop is
 //     this table. See report.)
@@ -206,15 +213,72 @@ func (s *Store) ListCourierDebts(ctx context.Context, user *auth.User, status st
 	return out, rows.Err()
 }
 
+// CanSettleCourierDebt reports whether a role may settle a courier debt:
+// holders of edit_courier_debts (admin/manager/supervisor) plus ANY
+// cashier (FIX-12 SW-H03 — jony 2026-11-19 redesign). Create/edit/delete
+// stay edit-only; this helper is settle-only. The web layer uses the
+// same helper for its route gate, so the two gates cannot drift apart.
+func CanSettleCourierDebt(role string) bool {
+	return rbac.Can(role, rbac.PermEditCourierDebts) || rbac.EffectiveRole(role) == rbac.RoleCashier
+}
+
+// BookCourierDebtForOrder books an online order's delivery amount as a
+// courier debt (FIX-12 SW-H04 — delivery confirmation books the amount
+// as DEBT on the courier, jony 2026-11-19 redesign). Idempotent: an
+// order books at most one debt — a second call for the same order
+// returns the existing debt's id and writes nothing. The debt's
+// OrderRef is "ONLINE-<orderID>". Admin/manager hold edit_courier_debts,
+// so the staff member confirming the delivery may book it.
+func (s *Store) BookCourierDebtForOrder(ctx context.Context, user *auth.User, orderID int64, courierName string, amount money.Cents) (int64, error) {
+	if err := rbac.Require(user.Role, rbac.PermEditCourierDebts); err != nil {
+		return 0, err
+	}
+	name := strings.TrimSpace(courierName)
+	if name == "" {
+		return 0, errors.New("اسم المندوب مطلوب")
+	}
+	if amount <= 0 {
+		return 0, errors.New("مبلغ الدين يجب أن يكون أكبر من صفر")
+	}
+	ref := fmt.Sprintf("ONLINE-%d", orderID)
+	var id int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRow(`SELECT DebtID FROM CourierDebts WHERE OrderRef=?`, ref).Scan(&id); err == nil {
+			return nil // already booked — confirming twice books once
+		} else if err != sql.ErrNoRows {
+			return err
+		}
+		res, err := tx.Exec(`INSERT INTO CourierDebts(CourierName,Amount,OrderRef,InvoiceNumber,Status,CreatedAt)
+			VALUES(?,?,?,NULL,'open',?)`, name, int64(amount), ref, Now())
+		if err != nil {
+			return err
+		}
+		id, err = res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		return AuditTx(tx, user.ID, user.UserName, "دين مندوب من تأكيد توصيل", "courier", nil, 0, 0, "",
+			fmt.Sprintf("دين مندوب من تأكيد توصيل طلب أونلاين #%d — %s — %s", orderID, name, money.FormatEGP(amount)))
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // SettleCourierDebt settles a courier debt (fully or partially).
 // The courier hands money OVER, so a cash settlement writes CashBox 'in'
 // and requires an open shift; non-cash never touches the drawer.
-// Cashier is READ-ONLY here and is refused (edit_courier_debts).
+// Settle is open to edit_courier_debts holders AND to any cashier
+// receiving cash (FIX-12 SW-H03): the settlement is recorded as a
+// COLLECTION on the receiving cashier (CashBox 'in' courier_collection
+// under the receiver's name + audit row naming courier and receiver).
+// Create/edit/delete stay edit-only — a cashier still cannot do those.
 // Amount must be > 0 and never above the debt — the debt never goes
 // below zero. Full settlement records PaidAt/PaidBy.
 func (s *Store) SettleCourierDebt(ctx context.Context, user *auth.User, id int64, amount money.Cents, method, notes string) (money.Cents, error) {
-	if err := rbac.Require(user.Role, rbac.PermEditCourierDebts); err != nil {
-		return 0, err
+	if !CanSettleCourierDebt(user.Role) {
+		return 0, rbac.Require(user.Role, rbac.PermEditCourierDebts)
 	}
 	if amount <= 0 {
 		return 0, errors.New("مبلغ السداد يجب أن يكون أكبر من صفر")

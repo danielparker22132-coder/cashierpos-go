@@ -31,26 +31,41 @@ func TestCreatePayableRoles(t *testing.T) {
 		t.Fatalf("payable wrong: %+v", p)
 	}
 	// Courier payable by name.
-	if _, err := s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "مندوب أحمد", Amount: money.Cents(3000), DueDate: "2026-12-02"}); err != nil {
+	if _, err := s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "مندوب أحمد", Amount: money.Cents(3000), DueDate: "2026-12-02", Description: "توصيل"}); err != nil {
 		t.Fatalf("courier payable: %v", err)
 	}
 	// Cashier may NOT create a payable.
 	mustErr(t, func() error {
-		_, err := s.CreatePayable(ctx, cashier, PayableInput{Kind: "vendor", PartyID: vid, Amount: money.Cents(100), DueDate: "2026-12-01"})
+		_, err := s.CreatePayable(ctx, cashier, PayableInput{Kind: "vendor", PartyID: vid, Amount: money.Cents(100), DueDate: "2026-12-01", Description: "اختبار دور"})
 		return err
 	}(), "cashier create payable")
-	// Validation: bad kind, zero amount, missing due date, unknown vendor.
+	// Validation: bad kind, zero amount, unknown vendor, missing
+	// courier name, empty description.
 	for name, in := range map[string]PayableInput{
-		"bad kind":        {Kind: "other", Amount: money.Cents(100), DueDate: "2026-12-01"},
-		"zero amount":     {Kind: "vendor", PartyID: vid, Amount: 0, DueDate: "2026-12-01"},
-		"no due date":     {Kind: "vendor", PartyID: vid, Amount: money.Cents(100)},
-		"unknown vendor":  {Kind: "vendor", PartyID: 9999, Amount: money.Cents(100), DueDate: "2026-12-01"},
-		"no courier name": {Kind: "courier", Amount: money.Cents(100), DueDate: "2026-12-01"},
+		"bad kind":        {Kind: "other", Amount: money.Cents(100), DueDate: "2026-12-01", Description: "اختبار"},
+		"zero amount":     {Kind: "vendor", PartyID: vid, Amount: 0, DueDate: "2026-12-01", Description: "اختبار"},
+		"unknown vendor":  {Kind: "vendor", PartyID: 9999, Amount: money.Cents(100), DueDate: "2026-12-01", Description: "اختبار"},
+		"no courier name": {Kind: "courier", Amount: money.Cents(100), DueDate: "2026-12-01", Description: "اختبار"},
+		"no reason":       {Kind: "vendor", PartyID: vid, Amount: money.Cents(100), DueDate: "2026-12-01"},
 	} {
 		mustErr(t, func() error {
 			_, err := s.CreatePayable(ctx, admin, in)
 			return err
 		}(), name)
+	}
+	// FIX-12 SW-M01: no due date is now ALLOWED (optional) — it used
+	// to be refused. The payable is created with an empty due date and
+	// never appears in the due list.
+	noDueID, err := s.CreatePayable(ctx, admin, PayableInput{Kind: "vendor", PartyID: vid, Amount: money.Cents(100), Description: "بدون تاريخ"})
+	if err != nil {
+		t.Fatalf("create payable without due date: %v", err)
+	}
+	pNoDue, err := s.GetPayable(ctx, admin, noDueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pNoDue.DueDate != "" || pNoDue.Status != "open" {
+		t.Fatalf("no-due payable wrong: %+v", pNoDue)
 	}
 }
 
@@ -64,9 +79,9 @@ func TestDuePayablesReminder(t *testing.T) {
 	admin := testUser(t, s, "admin1", "admin")
 	cashier := testUser(t, s, "cash1", "cashier")
 	// Overdue (Nov 20), due soon (Dec 05, within 30 days of Nov 25), far (Jan 25).
-	_, _ = s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "متأخر", Amount: money.Cents(1000), DueDate: "2026-11-20"})
-	_, _ = s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "قريب", Amount: money.Cents(2000), DueDate: "2026-12-05"})
-	_, _ = s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "بعيد", Amount: money.Cents(3000), DueDate: "2027-01-25"})
+	_, _ = s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "متأخر", Amount: money.Cents(1000), DueDate: "2026-11-20", Description: "اختبار"})
+	_, _ = s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "قريب", Amount: money.Cents(2000), DueDate: "2026-12-05", Description: "اختبار"})
+	_, _ = s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "بعيد", Amount: money.Cents(3000), DueDate: "2027-01-25", Description: "اختبار"})
 	// The reminder is visible to the on-shift cashier too (no role gate on read).
 	due, err := s.DuePayables(ctx, cashier)
 	if err != nil {
@@ -144,7 +159,7 @@ func TestSettlePayableGuards(t *testing.T) {
 	admin := testUser(t, s, "admin1", "admin")
 	cashier := testUser(t, s, "cash1", "cashier")
 	sup := testUser(t, s, "sup1", "supervisor")
-	id, _ := s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "مندوب", Amount: money.Cents(5000), DueDate: "2026-12-01"})
+	id, _ := s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "مندوب", Amount: money.Cents(5000), DueDate: "2026-12-01", Description: "توصيل"})
 	// Supervisor may NOT settle (no settle_payable in the matrix).
 	mustErr(t, func() error {
 		_, err := s.SettlePayable(ctx, sup, id, money.Cents(100), "Visa", "")
@@ -162,7 +177,7 @@ func TestSettlePayableGuards(t *testing.T) {
 		return err
 	}(), "cash settle over drawer")
 	// Cash settle without any shift refused.
-	id2, _ := s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "مندوب 2", Amount: money.Cents(5000), DueDate: "2026-12-01"})
+	id2, _ := s.CreatePayable(ctx, admin, PayableInput{Kind: "courier", PartyName: "مندوب 2", Amount: money.Cents(5000), DueDate: "2026-12-01", Description: "توصيل"})
 	mustErr(t, func() error {
 		_, err := s.SettlePayable(ctx, admin, id2, money.Cents(100), "Cash", "")
 		return err

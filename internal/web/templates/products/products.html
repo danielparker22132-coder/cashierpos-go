@@ -18,14 +18,14 @@
 {{end}}
 
 <table>
-  <thead><tr><th>المنتج</th><th>الباركود</th><th>الفئة</th><th>سعر الشراء</th><th>القطاعي</th><th>الجملة</th><th>جملة الجملة</th><th>الكمية</th><th>الحد الأدنى</th><th>الصلاحية</th><th></th></tr></thead>
+  <thead><tr><th>المنتج</th><th>الباركود</th><th>الفئة</th>{{if index .Data "canViewProfit"}}<th>سعر الشراء</th>{{end}}<th>القطاعي</th><th>الجملة</th><th>جملة الجملة</th><th>الكمية</th><th>الحد الأدنى</th><th>الصلاحية</th><th></th></tr></thead>
   <tbody>
   {{range $p := index .Data "products"}}
     <tr{{if le $p.Quantity $p.MinQuantity}} class="low-stock"{{end}}>
       <td><a href="/products/{{$p.ID}}">{{$p.Name}}</a>{{if $p.IsWeighted}} (وزني){{end}}{{if not $p.IsActive}} — معطّل{{end}}</td>
       <td class="num">{{$p.Barcode}}</td>
       <td>{{$p.Category}}</td>
-      <td class="num">{{egp $p.BuyPrice}}</td>
+      {{if index $.Data "canViewProfit"}}<td class="num">{{egp $p.BuyPrice}}</td>{{end}}
       <td class="num">{{egp $p.RetailPrice}}</td>
       <td class="num">{{egp $p.WholesalePrice}}</td>
       <td class="num">{{egp $p.BulkPrice}}</td>
@@ -35,7 +35,7 @@
       <td>{{if index $.Data "canManage"}}<a href="/products/{{$p.ID}}/edit">تعديل</a>{{end}}</td>
     </tr>
   {{else}}
-    <tr><td colspan="11">لا توجد منتجات مطابقة</td></tr>
+    <tr><td colspan="{{if index $.Data "canViewProfit"}}11{{else}}10{{end}}">لا توجد منتجات مطابقة</td></tr>
   {{end}}
   </tbody>
 </table>

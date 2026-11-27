@@ -1,0 +1,27 @@
+{{template "chrome-top" .}}
+<h1>الفواتير — فواتير اليوم</h1>
+<p class="hint">عرض فقط — أمين المخزن يطّلع على الفواتير دون تعديلها</p>
+<h2>فواتير اليوم ({{index .Data "today"}})</h2>
+<table>
+  <thead><tr><th>رقم الفاتورة</th><th>العميل</th><th>النوع</th><th>الصافي</th><th>المدفوع</th><th>المتبقي</th><th>طريقة الدفع</th><th>البائع</th><th>الحالة</th><th></th></tr></thead>
+  <tbody>
+  {{range $inv := index .Data "invoices"}}
+    <tr>
+      <td class="num">{{$inv.Number}}</td>
+      <td>{{$inv.CustomerName}}</td>
+      <td>{{$inv.SaleType}}</td>
+      <td class="num">{{egp $inv.Net}}</td>
+      <td class="num">{{egp $inv.Paid}}</td>
+      <td class="num">{{egp $inv.Remaining}}</td>
+      <td>{{$inv.PaymentMethod}}</td>
+      <td>{{$inv.UserName}}</td>
+      <td>{{if $inv.IsCanceled}}ملغاة{{else}}سارية{{end}}{{if $inv.HasReturns}} — بها مرتجع{{end}}</td>
+      <td><a href="/sales/{{$inv.ID}}">عرض</a></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="10">لا توجد فواتير اليوم بعد</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p><a href="/">عودة للرئيسية</a></p>
+{{template "chrome-bottom" .}}

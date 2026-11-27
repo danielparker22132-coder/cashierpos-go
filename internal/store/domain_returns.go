@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -59,6 +60,7 @@ type returnDetail struct {
 	UnitPrice     money.Cents
 	BuyPrice      money.Cents
 	TotalPrice    money.Cents
+	ItemDiscount  money.Cents
 	PromoDiscount money.Cents
 	// effective total for the whole line after promo + invoice discount share
 	effTotal money.Cents
@@ -78,20 +80,26 @@ type preparedReturn struct {
 // mergeReturnLines merges duplicate lines for the same product (FIX-1 M3:
 // two rows for one product in a single return must not each pass the
 // sold-minus-returned check against the DB state before either is posted).
-func mergeReturnLines(lines []ReturnLineInput) []ReturnLineInput {
+func mergeReturnLines(lines []ReturnLineInput) ([]ReturnLineInput, error) {
 	merged := map[int64]money.Qty{}
 	var order []int64
 	for _, ln := range lines {
 		if _, ok := merged[ln.ProductID]; !ok {
 			order = append(order, ln.ProductID)
 		}
-		merged[ln.ProductID] += ln.Qty
+		// R21-C-F1/F2: checked — duplicate request lines for one
+		// product must refuse instead of wrapping the merged qty.
+		total, err := money.AddQtyChecked(merged[ln.ProductID], ln.Qty)
+		if err != nil {
+			return nil, err
+		}
+		merged[ln.ProductID] = total
 	}
 	out := make([]ReturnLineInput, 0, len(order))
 	for _, pid := range order {
 		out = append(out, ReturnLineInput{ProductID: pid, Qty: merged[pid]})
 	}
-	return out
+	return out, nil
 }
 
 // ProcessReturn posts a partial or full return (R-03/R-05), atomically:
@@ -114,7 +122,11 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 	if strings.TrimSpace(reason) == "" {
 		return nil, errors.New("يجب كتابة سبب المرتجع")
 	}
-	lines = mergeReturnLines(lines)
+	var err error
+	lines, err = mergeReturnLines(lines)
+	if err != nil {
+		return nil, err
+	}
 	if len(lines) == 0 {
 		return nil, errors.New("لا توجد كمية متاحة للمرتجع")
 	}
@@ -126,10 +138,12 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		// Invoice: must exist and not be canceled (R-01/R-02).
 		var invNumber, customerID, remaining, netAmount int64
+		var invShiftID int64
 		var isCanceled int
-		err := tx.QueryRow(`SELECT InvoiceNumber,CustomerID,RemainingAmount,NetAmount,IsCanceled
+		err := tx.QueryRow(`SELECT InvoiceNumber,CustomerID,RemainingAmount,NetAmount,IsCanceled,
+			COALESCE(ShiftID,0)
 			FROM Invoices WHERE InvoiceID=?`, invoiceID).
-			Scan(&invNumber, &customerID, &remaining, &netAmount, &isCanceled)
+			Scan(&invNumber, &customerID, &remaining, &netAmount, &isCanceled, &invShiftID)
 		if err == sql.ErrNoRows {
 			return errors.New("الفاتورة غير موجودة")
 		}
@@ -140,20 +154,31 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			return errors.New("هذه الفاتورة ملغاة، ولا يمكن تنفيذ مرتجع عليها")
 		}
 		// Invoice discount + lines total (for pro-rata allocation).
-		var invDiscount int64
-		_ = tx.QueryRow(`SELECT COALESCE(Discount,0)+COALESCE(PromoDiscount,0) FROM Invoices WHERE InvoiceID=?`,
-			invoiceID).Scan(&invDiscount)
-		detailRows, err := tx.Query(`SELECT DetailID,ProductID,ProductName,Quantity,UnitPrice,BuyPrice,TotalPrice,PromoDiscount
+		// FIX-17 SW2-H01: the allocation must subtract each discount
+		// exactly once, so its base is the invoice-level discount
+		// ONLY. Invoices.Discount already includes per-line item
+		// discounts (domain_sales.go: Discount = totalItemDisc +
+		// effInvDiscount) and InvoiceDetails.TotalPrice is already net
+		// of the item discount, so adding Discount + PromoDiscount
+		// subtracted every line discount twice (item discounts once
+		// in TotalPrice and again inside alloc; promo discounts once
+		// as d.PromoDiscount and again inside alloc). The
+		// invoice-level discount is not stored separately anywhere,
+		// so it is derived below as Discount − Σ(ItemDiscount).
+		var storedDiscount int64
+		_ = tx.QueryRow(`SELECT COALESCE(Discount,0) FROM Invoices WHERE InvoiceID=?`,
+			invoiceID).Scan(&storedDiscount)
+		detailRows, err := tx.Query(`SELECT DetailID,ProductID,ProductName,Quantity,UnitPrice,BuyPrice,TotalPrice,ItemDiscount,PromoDiscount
 			FROM InvoiceDetails WHERE InvoiceID=? ORDER BY DetailID`, invoiceID)
 		if err != nil {
 			return err
 		}
 		var details []*returnDetail
-		linesTotal := money.Cents(0)
+		itemDiscTotal := money.Cents(0)
 		for detailRows.Next() {
 			var d returnDetail
-			var qty, unit, buy, total, promo int64
-			if err := detailRows.Scan(&d.DetailID, &d.ProductID, &d.ProductName, &qty, &unit, &buy, &total, &promo); err != nil {
+			var qty, unit, buy, total, itemDisc, promo int64
+			if err := detailRows.Scan(&d.DetailID, &d.ProductID, &d.ProductName, &qty, &unit, &buy, &total, &itemDisc, &promo); err != nil {
 				detailRows.Close()
 				return err
 			}
@@ -161,33 +186,82 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			d.UnitPrice = money.Cents(unit)
 			d.BuyPrice = money.Cents(buy)
 			d.TotalPrice = money.Cents(total)
+			d.ItemDiscount = money.Cents(itemDisc)
 			d.PromoDiscount = money.Cents(promo)
-			linesTotal += d.TotalPrice
+			itemDiscTotal += d.ItemDiscount
 			details = append(details, &d)
 		}
 		detailRows.Close()
 		if len(details) == 0 {
 			return errors.New("الفاتورة غير موجودة")
 		}
-		for _, d := range details {
-			alloc := money.Cents(0)
-			if linesTotal > 0 && invDiscount > 0 {
-				alloc = money.Cents(int64(d.TotalPrice) * invDiscount / int64(linesTotal))
+		invDiscount := storedDiscount - int64(itemDiscTotal)
+		if invDiscount < 0 {
+			invDiscount = 0
+		}
+		// FIX-18 R18-A-M01: the invoice discount must be allocated on
+		// the SAME bases the sale used — the post-line-promo line
+		// totals (domain_sales.go:540-548: bases[i] = lineTotal −
+		// LinePromos[i]). The old code allocated on TotalPrice
+		// (gross of the line promo), so a promo line took too large
+		// a share of the invoice discount and a promo-free line too
+		// small a share, and partial returns under/over-refunded by
+		// up to tens of cents. The stored TotalPrice is the line
+		// total gross of promo and the stored PromoDiscount is the
+		// line promo (+ any invoice-promo share), so base =
+		// TotalPrice − PromoDiscount (floored at 0) reproduces the
+		// sale base exactly when there is no invoice-level promo.
+		// The shares use AllocProRata, like the sale, so the rounding
+		// remainder lands on the last line with a positive base and
+		// the per-line nets match the sale exactly.
+		bases := make([]money.Cents, len(details))
+		for i, d := range details {
+			b := d.TotalPrice - d.PromoDiscount
+			if b < 0 {
+				b = 0
 			}
-			d.effTotal = d.TotalPrice - d.PromoDiscount - alloc
+			bases[i] = b
+		}
+		shares, err := AllocProRata(money.Cents(invDiscount), bases)
+		if err != nil {
+			return err
+		}
+		for i, d := range details {
+			d.effTotal = bases[i] - shares[i]
 			if d.effTotal < 0 {
 				d.effTotal = 0
 			}
 		}
-		// Open shift of the caller today (may be absent).
+		// FIX-12 SW-M05: the refund is attributed to the invoice's own
+		// shift when it is still open — the drawer that actually holds
+		// the sale's cash — exactly like cancel does. Only when the
+		// invoice's shift is closed (or absent) do we fall back to the
+		// returner's open shift. The drawer-balance gate, the CashBox
+		// leg, the Returns rows and the negative-drawer alert below all
+		// use this shift, so the gate checks the drawer that holds the
+		// cash instead of the returner's possibly thin drawer.
 		var shiftID int64
 		var shiftOpen bool
-		if sid, err := OpenShiftID(tx, user.ID); err == nil {
-			shiftID, shiftOpen = sid, true
+		if invShiftID > 0 {
+			if err := tx.QueryRow(`SELECT ShiftID FROM Shifts WHERE ShiftID=? AND IsOpen=1`,
+				invShiftID).Scan(&shiftID); err == nil {
+				shiftOpen = true
+			}
 		}
-		// Already-refunded total (refund cap).
+		if !shiftOpen {
+			if sid, err := OpenShiftID(tx, user.ID); err == nil {
+				shiftID, shiftOpen = sid, true
+			}
+		}
+		// Already-refunded total (refund cap). FIX-24 lane F: the SUM
+		// scan used to be swallowed (`_ =`), so on overflow the cap
+		// inflated to the full net and a debt-absorbed refund posted
+		// against absurd prior Returns rows. Check it via sumScanErr
+		// (as the shift summary does) and refuse before any posting.
 		var alreadyRefunded int64
-		_ = tx.QueryRow(`SELECT COALESCE(SUM(TotalRefund),0) FROM Returns WHERE InvoiceID=?`, invoiceID).Scan(&alreadyRefunded)
+		if err := sumScanErr(tx.QueryRow(`SELECT COALESCE(SUM(TotalRefund),0) FROM Returns WHERE InvoiceID=?`, invoiceID).Scan(&alreadyRefunded)); err != nil {
+			return err
+		}
 		refundCap := money.Cents(netAmount) - money.Cents(alreadyRefunded)
 		if refundCap < 0 {
 			refundCap = 0
@@ -207,7 +281,14 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			for _, d := range details {
 				if d.ProductID == line.ProductID {
 					prodDetails = append(prodDetails, d)
-					sold += d.Quantity
+					// R21-C-F1/F2: checked — a stored absurd detail
+					// qty must refuse the return instead of
+					// wrapping the sold total.
+					total, aerr := money.AddQtyChecked(sold, d.Quantity)
+					if aerr != nil {
+						return aerr
+					}
+					sold = total
 					if prodName == "" {
 						prodName = d.ProductName
 						firstBuy = d.BuyPrice
@@ -230,10 +311,20 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			sort.Slice(sorted, func(i, j int) bool {
 				ei, ej := money.Cents(0), money.Cents(0)
 				if sorted[i].Quantity > 0 {
-					ei = money.Cents(int64(sorted[i].effTotal) * 1000 / int64(sorted[i].Quantity))
+					// R19-B-F2: checked; an overflowing unit price is
+					// genuinely the largest, so it sorts last.
+					if v, merr := money.MulDiv(int64(sorted[i].effTotal), 1000, int64(sorted[i].Quantity)); merr == nil {
+						ei = money.Cents(v)
+					} else {
+						ei = money.Cents(math.MaxInt64)
+					}
 				}
 				if sorted[j].Quantity > 0 {
-					ej = money.Cents(int64(sorted[j].effTotal) * 1000 / int64(sorted[j].Quantity))
+					if v, merr := money.MulDiv(int64(sorted[j].effTotal), 1000, int64(sorted[j].Quantity)); merr == nil {
+						ej = money.Cents(v)
+					} else {
+						ej = money.Cents(math.MaxInt64)
+					}
 				}
 				return ei < ej
 			})
@@ -255,7 +346,14 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 					take = rowAvail
 				}
 				// refund += effTotal * take / rowQty
-				refund += money.Cents(int64(d.effTotal) * int64(take) / int64(d.Quantity))
+				part, perr := money.MulDiv(int64(d.effTotal), int64(take), int64(d.Quantity))
+				if perr != nil {
+					return perr
+				}
+				refund, perr = money.AddChecked(refund, money.Cents(part))
+				if perr != nil {
+					return perr
+				}
 				remainingQty -= take
 				if remainingQty <= 0 {
 					break
@@ -263,13 +361,26 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			}
 			unitPrice := money.Cents(0)
 			if line.Qty > 0 {
-				unitPrice = money.Cents(int64(refund) * 1000 / int64(line.Qty))
+				uv, uerr := money.MulDiv(int64(refund), 1000, int64(line.Qty))
+				if uerr != nil {
+					return uerr
+				}
+				unitPrice = money.Cents(uv)
 			}
 			prepared = append(prepared, &preparedReturn{
 				ProductID: line.ProductID, ProductName: prodName, Qty: line.Qty,
 				UnitPrice: unitPrice, BuyPrice: firstBuy, Refund: refund,
 			})
-			totalRefund += refund
+			// R22-E-F1: checked — three stored absurd line refunds
+			// used to wrap the total (3 x 6.1e18 -> 2), and the cap
+			// check below compared the wrapped total, so it could
+			// not catch the wrap. Refuse with the Arabic overflow
+			// message instead of storing the wrapped total.
+			total, terr := money.AddChecked(totalRefund, refund)
+			if terr != nil {
+				return terr
+			}
+			totalRefund = total
 			returnedByProduct[line.ProductID] += line.Qty
 		}
 		// Cap the refund at the goods value still refundable.
@@ -282,14 +393,28 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 				}
 				prepared[i].Refund -= cut
 				if prepared[i].Qty > 0 {
-					prepared[i].UnitPrice = money.Cents(int64(prepared[i].Refund) * 1000 / int64(prepared[i].Qty))
+					uv, uerr := money.MulDiv(int64(prepared[i].Refund), 1000, int64(prepared[i].Qty))
+					if uerr != nil {
+						return uerr
+					}
+					prepared[i].UnitPrice = money.Cents(uv)
 				}
 				excess -= cut
 			}
 			totalRefund = refundCap
 		}
 		if totalRefund <= 0 {
-			return errors.New("لا توجد كمية متاحة للمرتجع")
+			// FIX-18 R18-A-L02: the quantities ARE available here —
+			// the refund itself is zero (a net-0 invoice, or an
+			// invoice whose refundable value is already exhausted).
+			// Say so instead of claiming there is no quantity to
+			// return. The "لا توجد كمية متاحة للمرتجع" message stays
+			// for the genuinely out-of-quantity cases (no lines
+			// requested / ProcessReturnAll with nothing left).
+			if netAmount <= 0 {
+				return errors.New("لا يوجد مبلغ قابل للاسترداد — صافي الفاتورة صفر")
+			}
+			return errors.New("لا يوجد مبلغ قابل للاسترداد")
 		}
 		// bxgy: recompute earned free units per product; the voided
 		// free qty goes back to stock and is named in the result.
@@ -309,7 +434,13 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			var sold money.Qty
 			for _, d := range details {
 				if d.ProductID == pid {
-					sold += d.Quantity
+					// R21-C-F1/F2: checked — same stored-qty wrap
+					// as the prepare loop above.
+					total, aerr := money.AddQtyChecked(sold, d.Quantity)
+					if aerr != nil {
+						return aerr
+					}
+					sold = total
 				}
 			}
 			already, err := alreadyReturnedQtyTx(tx, invoiceID, pid)
@@ -318,8 +449,17 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			}
 			keptBefore := sold - already
 			keptAfter := keptBefore - retQty
-			voided := EarnedFreeUnits(keptBefore, money.Qty(buyQty.Int64), money.Qty(freeQty.Int64)) -
-				EarnedFreeUnits(keptAfter, money.Qty(buyQty.Int64), money.Qty(freeQty.Int64))
+			// R20-B-F2b: checked — a stored absurd X/Y must refuse
+			// the return instead of voiding a wrapped free qty.
+			earnedBefore, eerr := EarnedFreeUnitsChecked(keptBefore, money.Qty(buyQty.Int64), money.Qty(freeQty.Int64))
+			if eerr != nil {
+				return eerr
+			}
+			earnedAfter, eerr := EarnedFreeUnitsChecked(keptAfter, money.Qty(buyQty.Int64), money.Qty(freeQty.Int64))
+			if eerr != nil {
+				return eerr
+			}
+			voided := earnedBefore - earnedAfter
 			if voided <= 0 {
 				continue
 			}
@@ -332,7 +472,10 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 					break
 				}
 			}
-			voidedCost := money.MulQty(buy, voided)
+			voidedCost, verr := money.MulQty(buy, voided)
+			if verr != nil {
+				return verr
+			}
 			voidedLines = append(voidedLines, VoidedFreeLine{
 				ProductID: pid, ProductName: prodName, OfferName: offerName,
 				Qty: voided, VoidedCost: voidedCost,
@@ -374,6 +517,26 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			}
 		}
 		now := Now()
+		// FIX-17 SW2-L02: stock levels before the restock, for the
+		// audit detail lines below (QuantityBefore/After per returned
+		// line), plus the first sale unit price per product (the
+		// price actually charged before the return).
+		stockBeforeReturn := map[int64]money.Qty{}
+		firstUnitPrice := map[int64]money.Cents{}
+		for _, d := range details {
+			if _, ok := firstUnitPrice[d.ProductID]; !ok {
+				firstUnitPrice[d.ProductID] = d.UnitPrice
+			}
+		}
+		for _, p := range prepared {
+			if _, ok := stockBeforeReturn[p.ProductID]; !ok {
+				var q int64
+				if err := tx.QueryRow(`SELECT Quantity FROM Products WHERE ProductID=?`, p.ProductID).Scan(&q); err != nil {
+					return err
+				}
+				stockBeforeReturn[p.ProductID] = money.Qty(q)
+			}
+		}
 		// Posting (atomic).
 		result = &ReturnResult{
 			TotalRefund: totalRefund, DebtReduction: debtReduction,
@@ -382,6 +545,10 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			VoidedFree: voidedLines,
 		}
 		attachedVoided := map[int64]bool{}
+		// R21-C-F1/F2: post-restock stock per product, computed with
+		// the same checked addition as the UPDATE above — the audit
+		// QuantityAfter must never re-add the returned qty unchecked.
+		restockedAfter := map[int64]money.Qty{}
 		for _, p := range prepared {
 			vq, vc := money.Qty(0), money.Cents(0)
 			if v, ok := voidedByProduct[p.ProductID]; ok && !attachedVoided[p.ProductID] {
@@ -413,8 +580,17 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			if err := tx.QueryRow(`SELECT Quantity FROM Products WHERE ProductID=?`, p.ProductID).Scan(&stockQty); err != nil {
 				return err
 			}
+			// R21-C-F1/F2: checked — a stored absurd sold qty can
+			// make the returned qty itself sit in the top int64
+			// band, and stockQty+qty would wrap to a negative
+			// stock. Refuse the whole return (tx rolls back) instead.
+			newQty, aerr := money.AddQtyChecked(money.Qty(stockQty), p.Qty)
+			if aerr != nil {
+				return aerr
+			}
+			restockedAfter[p.ProductID] = newQty
 			if _, err := tx.Exec(`UPDATE Products SET Quantity=? WHERE ProductID=?`,
-				stockQty+int64(p.Qty), p.ProductID); err != nil {
+				int64(newQty), p.ProductID); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(`INSERT INTO StockMovements(ProductID,MovementType,Quantity,BuyPrice,Notes,UserID,MovementDate)
@@ -455,8 +631,19 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			if err := tx.QueryRow(`SELECT Quantity FROM Products WHERE ProductID=?`, v.ProductID).Scan(&stockQty); err != nil {
 				return err
 			}
+			// R21-C-F1/F2: checked — this is the second named site
+			// of the finding: a voided free qty in the top int64
+			// band (1 group x Y = 9223372036854775000) wrapped
+			// stock 97000 to -9223372036854677616. The stored-grant
+			// cap in EarnedFreeUnitsChecked refuses it first; this
+			// checked addition is the second layer, so no path can
+			// store a wrapped voided restore.
+			newQty, aerr := money.AddQtyChecked(money.Qty(stockQty), v.Qty)
+			if aerr != nil {
+				return aerr
+			}
 			if _, err := tx.Exec(`UPDATE Products SET Quantity=? WHERE ProductID=?`,
-				stockQty+int64(v.Qty), v.ProductID); err != nil {
+				int64(newQty), v.ProductID); err != nil {
 				return err
 			}
 			var buy int64
@@ -541,7 +728,34 @@ func (s *Store) ProcessReturn(ctx context.Context, user *auth.User, invoiceID in
 			detail += " — وحدات مجانية مستردة (تُسلَّم للكاشير): " + strings.Join(parts, "، ")
 		}
 		invNum := invNumber
-		return AuditTx(tx, user.ID, user.UserName, "مرتجع", "مبيعات", &invNum, invoiceID, customerID, "", detail)
+		if err := AuditTx(tx, user.ID, user.UserName, "مرتجع", "مبيعات", &invNum, invoiceID, customerID, "", detail); err != nil {
+			return err
+		}
+		// FIX-17 SW2-L02 (return half): per-line audit detail rows,
+		// mirroring the sale path (domain_sales.go FIX-12 SW-M09), so
+		// the audit detail page shows qty/price before-after per
+		// returned line instead of "لا توجد بنود تفصيلية لهذا السجل".
+		// QuantityBefore is the pre-return stock, QuantityAfter is
+		// before + returned qty on this line (voided free units, if
+		// any, are a separate restock and are named in the audit
+		// note above); PriceBefore is the unit price charged at sale,
+		// PriceAfter the effective refund unit price, LineTotal the
+		// refund for the line.
+		var returnLogID int64
+		if err := tx.QueryRow(`SELECT LogID FROM AuditLog WHERE ActionType='مرتجع' AND InvoiceID=? ORDER BY LogID DESC LIMIT 1`, invoiceID).Scan(&returnLogID); err == nil {
+			for _, p := range prepared {
+				before := stockBeforeReturn[p.ProductID]
+				if err := insertAuditDetailTx(tx, returnLogID, AuditDetail{
+					ProductID: p.ProductID, ProductName: p.ProductName,
+					QuantityBefore: before, QuantityAfter: restockedAfter[p.ProductID], QuantityChange: p.Qty,
+					PriceBefore: firstUnitPrice[p.ProductID], PriceAfter: p.UnitPrice,
+					LineTotal: p.Refund,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -569,7 +783,14 @@ func (s *Store) ProcessReturnAll(ctx context.Context, user *auth.User, invoiceID
 			if _, ok := seen[pid]; !ok {
 				order = append(order, pid)
 			}
-			seen[pid] += money.Qty(qty)
+			// R21-C-F1/F2: checked — a stored absurd detail qty
+			// must refuse the return-all instead of wrapping the
+			// sold total it derives the available qty from.
+			total, aerr := money.AddQtyChecked(seen[pid], money.Qty(qty))
+			if aerr != nil {
+				return aerr
+			}
+			seen[pid] = total
 		}
 		for _, pid := range order {
 			already, err := alreadyReturnedQtyTx(tx, invoiceID, pid)
@@ -622,8 +843,13 @@ type ReturnsAnalytics struct {
 	ByUser     []*ReturnByUser
 }
 
-func lostProfitOf(refund money.Cents, qty money.Qty, buy money.Cents) money.Cents {
-	return refund - money.MulQty(buy, qty)
+// R19-B-F2: checked — a wrapped buy cost used to corrupt the analytics.
+func lostProfitOf(refund money.Cents, qty money.Qty, buy money.Cents) (money.Cents, error) {
+	cost, err := money.MulQty(buy, qty)
+	if err != nil {
+		return 0, err
+	}
+	return refund - cost, nil
 }
 
 // GetReturnsAnalytics builds the returns analytics (counts, value,
@@ -660,10 +886,27 @@ func (s *Store) GetReturnsAnalytics(ctx context.Context, user *auth.User, from, 
 		if err := rows.Scan(&pid, &name, &qty, &unit, &buy, &refund, &userName); err != nil {
 			return nil, err
 		}
-		lost := lostProfitOf(money.Cents(refund), money.Qty(qty), money.Cents(buy))
+		lost, lerr := lostProfitOf(money.Cents(refund), money.Qty(qty), money.Cents(buy))
+		if lerr != nil {
+			return nil, lerr
+		}
 		rep.Count++
-		rep.TotalValue += money.Cents(refund)
-		rep.LostProfit += lost
+		// R22-E-F1: checked — the Go-side sums wrap silently on
+		// legacy-poison rows (and, in theory, on enough absurd-value
+		// app-stored rows: no price cap bounds a multi-line invoice
+		// net). Refuse with the Arabic overflow message instead of
+		// reporting incoherent wrapped totals. Qty stays a plain
+		// accumulation: wrapping it needs ~9.2e10 rows.
+		total, terr := money.AddChecked(rep.TotalValue, money.Cents(refund))
+		if terr != nil {
+			return nil, terr
+		}
+		rep.TotalValue = total
+		lostTotal, terr := money.AddChecked(rep.LostProfit, lost)
+		if terr != nil {
+			return nil, terr
+		}
+		rep.LostProfit = lostTotal
 		p, ok := byProd[pid]
 		if !ok {
 			p = &ReturnByProduct{ProductID: pid, ProductName: name}
@@ -672,8 +915,16 @@ func (s *Store) GetReturnsAnalytics(ctx context.Context, user *auth.User, from, 
 		}
 		p.Count++
 		p.Qty += money.Qty(qty)
-		p.TotalValue += money.Cents(refund)
-		p.LostProfit += lost
+		total, terr = money.AddChecked(p.TotalValue, money.Cents(refund))
+		if terr != nil {
+			return nil, terr
+		}
+		p.TotalValue = total
+		lostTotal, terr = money.AddChecked(p.LostProfit, lost)
+		if terr != nil {
+			return nil, terr
+		}
+		p.LostProfit = lostTotal
 		u, ok := byUser[userName]
 		if !ok {
 			u = &ReturnByUser{UserName: userName}
@@ -681,8 +932,16 @@ func (s *Store) GetReturnsAnalytics(ctx context.Context, user *auth.User, from, 
 			userOrder = append(userOrder, userName)
 		}
 		u.Count++
-		u.TotalValue += money.Cents(refund)
-		u.LostProfit += lost
+		total, terr = money.AddChecked(u.TotalValue, money.Cents(refund))
+		if terr != nil {
+			return nil, terr
+		}
+		u.TotalValue = total
+		lostTotal, terr = money.AddChecked(u.LostProfit, lost)
+		if terr != nil {
+			return nil, terr
+		}
+		u.LostProfit = lostTotal
 	}
 	for _, pid := range prodOrder {
 		rep.ByProduct = append(rep.ByProduct, byProd[pid])

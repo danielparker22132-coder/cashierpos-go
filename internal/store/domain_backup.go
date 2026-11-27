@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,6 +58,18 @@ func backupFileName() string {
 	return "CashierDB_" + Now()[:10] + "_" + strings.ReplaceAll(Now()[11:], ":", "") + ".db"
 }
 
+// R26-D-F2: backup errors reach the HTML handlers verbatim
+// (renderAdminErr sets p.Error = err.Error()), and the raw OS/driver
+// error carries a server filesystem path ("mkdir /…/backups: not a
+// directory"). backupFail logs the raw error server-side and returns
+// only the static Arabic message the client may see, mirroring
+// apiBackupNow (500 generic). Callers must never wrap the raw error
+// with %v/%w into a returned error or into BackupResult.Error.
+func backupFail(raw error, msg string) error {
+	log.Printf("backup: %s: %v", msg, raw)
+	return errors.New(msg)
+}
+
 // BackupDir returns the local backups folder (beside the database file).
 func (s *Store) BackupDir() (string, error) {
 	if s.Path == "" || s.Path == ":memory:" {
@@ -77,12 +90,12 @@ func VerifyBackupFile(path string) error {
 	}
 	db, err := sql.Open("sqlite", path+"?mode=ro")
 	if err != nil {
-		return err
+		return backupFail(err, "تعذّر فتح النسخة للتحقق")
 	}
 	defer db.Close()
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='Users'`).Scan(&n); err != nil {
-		return fmt.Errorf("النسخة ليست قاعدة SQLite صالحة: %v", err)
+		return backupFail(err, "النسخة ليست قاعدة SQLite صالحة")
 	}
 	if n == 0 {
 		return errors.New("النسخة لا تحتوي جدول Users")
@@ -91,10 +104,10 @@ func VerifyBackupFile(path string) error {
 	// require the single result row to be "ok".
 	var result string
 	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&result); err != nil {
-		return fmt.Errorf("تعذّر فحص سلامة النسخة: %v", err)
+		return backupFail(err, "تعذّر فحص سلامة النسخة")
 	}
 	if result != "ok" {
-		return fmt.Errorf("النسخة تالفة — فحص السلامة: %s", result)
+		return backupFail(errors.New(result), "النسخة تالفة — فحص السلامة فشل")
 	}
 	return nil
 }
@@ -160,7 +173,7 @@ func (s *Store) CreateBackup(ctx context.Context, user *auth.User) (BackupResult
 		return res, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return res, fmt.Errorf("تعذّر إنشاء مجلد النسخ المحلي: %v", err)
+		return res, backupFail(err, "تعذّر إنشاء مجلد النسخ المحلي")
 	}
 	// Same-second runs would collide on the timestamped name (VACUUM INTO
 	// refuses an existing target), so suffix _2, _3, ... when needed.
@@ -173,10 +186,10 @@ func (s *Store) CreateBackup(ctx context.Context, user *auth.User) (BackupResult
 		res.FileName = strings.TrimSuffix(backupFileName(), ".db") + "_" + strconv.Itoa(i) + ".db"
 	}
 	if _, err := s.DB.Exec(`VACUUM INTO ?`, res.LocalPath); err != nil {
-		return res, fmt.Errorf("فشل النسخ المحلي: %v", err)
+		return res, backupFail(err, "فشل النسخ المحلي")
 	}
 	if err := VerifyBackupFile(res.LocalPath); err != nil {
-		return res, fmt.Errorf("فشل التحقق من النسخة المحلية: %v", err)
+		return res, backupFail(err, "فشل التحقق من النسخة المحلية")
 	}
 	st, _ := os.Stat(res.LocalPath)
 	res.LocalSize = st.Size()
@@ -200,11 +213,11 @@ func (s *Store) CreateBackup(ctx context.Context, user *auth.User) (BackupResult
 		res.CloudPath = filepath.Join(cfg.Dir, res.FileName)
 		if err := copyFile(res.LocalPath, res.CloudPath); err != nil {
 			res.CloudStatus = CloudError
-			res.Error = fmt.Sprintf("فشل كتابة النسخة السحابية: %v", err)
+			res.Error = backupFail(err, "فشل كتابة النسخة السحابية").Error()
 			_ = s.SetSetting("cloud_backup_last_status", "error")
 		} else if err := verifyCloudCopy(res.CloudPath, res.LocalSize); err != nil {
 			res.CloudStatus = CloudError
-			res.Error = fmt.Sprintf("فشل التحقق من النسخة السحابية: %v", err)
+			res.Error = backupFail(err, "فشل التحقق من النسخة السحابية").Error()
 			_ = s.SetSetting("cloud_backup_last_status", "error")
 		} else {
 			cst, _ := os.Stat(res.CloudPath)
@@ -318,10 +331,10 @@ func (s *Store) RestoreBackup(ctx context.Context, user *auth.User, location, na
 		return errors.New("موقع النسخة غير معروف (local أو cloud)")
 	}
 	if err := VerifyBackupFile(src); err != nil {
-		return fmt.Errorf("التحقق من النسخة فشل — لن تتم الاستعادة: %v", err)
+		return backupFail(err, "التحقق من النسخة فشل — لن تتم الاستعادة")
 	}
 	if err := s.DB.Close(); err != nil {
-		return fmt.Errorf("تعذّر إغلاق الاتصال الحالي: %v", err)
+		return backupFail(err, "تعذّر إغلاق الاتصال الحالي")
 	}
 	// FIX-1 M8: atomic replacement — copy to a temp file in the same
 	// directory, then rename over the live file, so a crash mid-copy
@@ -332,12 +345,12 @@ func (s *Store) RestoreBackup(ctx context.Context, user *auth.User, location, na
 		// Connection is closed; reopen against whatever is on disk so the
 		// store stays usable, then report the failure.
 		_ = s.reopen()
-		return fmt.Errorf("فشل استبدال ملف قاعدة البيانات: %v — أعد تشغيل البرنامج", err)
+		return backupFail(err, "فشل استبدال ملف قاعدة البيانات — أعد تشغيل البرنامج")
 	}
 	if err := os.Rename(tmpPath, s.Path); err != nil {
 		_ = os.Remove(tmpPath)
 		_ = s.reopen()
-		return fmt.Errorf("فشل استبدال ملف قاعدة البيانات: %v — أعد تشغيل البرنامج", err)
+		return backupFail(err, "فشل استبدال ملف قاعدة البيانات — أعد تشغيل البرنامج")
 	}
 	if err := s.reopen(); err != nil {
 		return errors.New("تم استبدال قاعدة البيانات لكن تعذّر إعادة فتح الاتصال — أعد تشغيل البرنامج")

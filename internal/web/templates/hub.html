@@ -50,6 +50,12 @@
 <div class="alert warn" role="alert" id="hub-inventory-alert">{{template "icon-alert"}} تنبيه المخزون عند بدء التشغيل:
 {{if gt .Data.ExpiredCount 0}}<div>يوجد {{.Data.ExpiredCount}} صنف منتهي الصلاحية.</div>{{end}}{{if gt .Data.NearExpiryCount 0}}<div>يوجد {{.Data.NearExpiryCount}} صنف ينتهي خلال 7 أيام.</div>{{end}}{{if gt .Data.VendorDueCount 0}}<div>يوجد {{.Data.VendorDueCount}} مورد له مستحقات قريبة.</div>{{end}}<button type="button" class="btn btn-small hub-dismiss" data-dismiss="hub-inventory-alert">إغلاق</button></div>
 {{end}}
+{{/* FIX-12 SW-M03: due-payables reminder — first hub render of the
+   day only (dedupe flag lives in hubData); links to the dedicated
+   alerts page. Hidden entirely when nothing is due. */}}
+{{if .Data.ShowDuePayablesReminder}}
+<div class="alert warn" role="alert" id="hub-payables-reminder">{{template "icon-alert"}} تنبيه المستحقات: يوجد {{.Data.DuePayablesCount}} مستحق واجب السداد أو قريب الاستحقاق — <a href="/payables/alerts">عرض المستحقات المستحقة</a><button type="button" class="btn btn-small hub-dismiss" data-dismiss="hub-payables-reminder">إغلاق</button></div>
+{{end}}
 {{end}}
 
 {{/* H-8: bells hidden at 0 — each bell renders only with a nonzero
@@ -79,8 +85,10 @@
   {{if can .User "view_products"}}<a href="/products" data-label="المنتجات">المنتجات</a>{{end}}
   {{if can .User "view_stock"}}<a href="/products" data-label="المخزون">المخزون</a>{{end}}
   {{if can .User "stocktake_count"}}<a href="/stocktake" data-label="الجرد بالباركود">الجرد بالباركود</a>{{end}}
-  {{if or (can .User "manage_vendors") (can .User "create_vendor")}}<a href="/vendors" data-label="الموردون">الموردون</a>{{end}}
-  <a href="/payables" data-label="المستحقات">المستحقات</a>
+  {{if or (can .User "manage_vendors") (can .User "create_vendor") (can .User "view_reports")}}<a href="/vendors" data-label="الموردون">الموردون</a>{{end}}
+  {{if can .User "view_payables"}}<a href="/payables" data-label="المستحقات">المستحقات</a>{{end}}
+  {{if can .User "view_transfers"}}<a href="/transfers" data-label="التحويلات">التحويلات</a>{{end}}
+  {{if can .User "view_courier_debts"}}<a href="/courier-debts" data-label="ديون المناديب">ديون المناديب</a>{{end}}
   {{if can .User "view_zones"}}<a href="/zones" data-label="مناطق التوصيل">مناطق التوصيل</a>{{end}}
   {{if can .User "manage_customers"}}<a href="/customers" data-label="العملاء">العملاء</a>{{end}}
   {{if can .User "view_reports"}}<a href="/reports/sales" data-label="الفواتير">الفواتير</a>{{end}}
@@ -116,11 +124,11 @@
 {{if .Data}}
 <div class="summary">
   {{if eq .Data.SummaryScope "day"}}
-  <div class="summary-box"><span class="summary-label">مبيعات اليوم</span><span class="summary-value num">{{egp .Data.TodaySales}}</span></div>
-  <div class="summary-box"><span class="summary-label">عدد فواتير اليوم</span><span class="summary-value num">{{.Data.TodayInvoices}}</span></div>
+  <div class="summary-box"><span class="summary-label">مبيعات اليوم</span><span class="summary-value num">{{if .Data.SummaryError}}{{.Data.SummaryError}}{{else}}{{egp .Data.TodaySales}}{{end}}</span></div>
+  <div class="summary-box"><span class="summary-label">عدد فواتير اليوم</span><span class="summary-value num">{{if .Data.SummaryError}}—{{else}}{{.Data.TodayInvoices}}{{end}}</span></div>
   {{else}}
-  <div class="summary-box"><span class="summary-label">مبيعات شيفتي</span><span class="summary-value num">{{egp .Data.ShiftSales}}</span></div>
-  <div class="summary-box"><span class="summary-label">فواتير شيفتي</span><span class="summary-value num">{{.Data.ShiftInvoices}}</span></div>
+  <div class="summary-box"><span class="summary-label">مبيعات شيفتي</span><span class="summary-value num">{{if .Data.SummaryError}}{{.Data.SummaryError}}{{else}}{{egp .Data.ShiftSales}}{{end}}</span></div>
+  <div class="summary-box"><span class="summary-label">فواتير شيفتي</span><span class="summary-value num">{{if .Data.SummaryError}}—{{else}}{{.Data.ShiftInvoices}}{{end}}</span></div>
   {{end}}
   <div class="summary-box"><span class="summary-label">رصيد الدرج</span><span class="summary-value num">{{if .Data.HasDrawer}}{{egp .Data.DrawerBalance}}{{else}}—{{end}}</span></div>
   <div class="summary-box"><span class="summary-label">طلبات متجر معلقة</span><span class="summary-value num">{{if .Data.PendingOrdersKnown}}{{.Data.PendingOrders}}{{else}}غير متصل{{end}}</span></div>
@@ -163,13 +171,21 @@
   {{if can .User "view_products"}}<a class="card" href="/products"><span class="card-icon">{{template "icon-box"}}</span><span class="card-title">المنتجات</span><span class="card-desc">أصناف وأسعار ومخزون</span></a>{{end}}
   {{if can .User "view_stock"}}<a class="card" href="/products"><span class="card-icon">{{template "icon-box"}}</span><span class="card-title">المخزون</span><span class="card-desc">كميات المخزون المتاحة</span></a>{{end}}
   {{if can .User "stocktake_count"}}<a class="card" href="/stocktake"><span class="card-icon">{{template "icon-clipboard"}}</span><span class="card-title">الجرد بالباركود</span><span class="card-desc">جلسات جرد المخزون</span></a>{{end}}
-  {{if or (can .User "manage_vendors") (can .User "create_vendor")}}<a class="card" href="/vendors"><span class="card-icon">{{template "icon-factory"}}</span><span class="card-title">الموردون</span><span class="card-desc">موردون وفواتير شراء</span></a>{{end}}
-  <a class="card" href="/payables"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">المستحقات</span><span class="card-desc">مستحقات الموردين والسداد</span></a>
+  {{/* FIX-12 SW-L10: supervisor views the vendors list/detail
+     (both are login-open server-side) although they cannot manage
+     vendors — view_reports is the supervisor-held perm that
+     distinguishes them from cashier/warehouse here (cashier already
+     sees it via create_vendor). */}}
+  {{if or (can .User "manage_vendors") (can .User "create_vendor") (can .User "view_reports")}}<a class="card" href="/vendors"><span class="card-icon">{{template "icon-factory"}}</span><span class="card-title">الموردون</span><span class="card-desc">موردون وفواتير شراء</span></a>{{end}}
+  {{if can .User "view_payables"}}<a class="card" href="/payables"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">المستحقات</span><span class="card-desc">مستحقات الموردين والسداد</span></a>{{end}}
+  {{if can .User "view_transfers"}}<a class="card" href="/transfers"><span class="card-icon">{{template "icon-undo"}}</span><span class="card-title">التحويلات</span><span class="card-desc">تحويلات بين المستخدمين</span></a>{{end}}
   {{if can .User "view_zones"}}<a class="card" href="/zones"><span class="card-icon">{{template "icon-gear"}}</span><span class="card-title">مناطق التوصيل</span><span class="card-desc">مناطق ورسوم التوصيل</span></a>{{end}}
 </div></div>
 
 <div class="hub-panel" id="hub-panel-s3" hidden><div class="hub">
   {{if can .User "manage_customers"}}<a class="card" href="/customers"><span class="card-icon">{{template "icon-users"}}</span><span class="card-title">العملاء</span><span class="card-desc">عملاء وتحصيل وديون</span></a>{{end}}
+  {{/* FIX-12 SW-L10: courier debts were reachable only by direct URL. */}}
+  {{if can .User "view_courier_debts"}}<a class="card" href="/courier-debts"><span class="card-icon">{{template "icon-banknote"}}</span><span class="card-title">ديون المناديب</span><span class="card-desc">ديون المناديب والتسوية</span></a>{{end}}
   {{if can .User "view_reports"}}<a class="card" href="/reports/sales"><span class="card-icon">{{template "icon-receipt"}}</span><span class="card-title">الفواتير</span><span class="card-desc">قائمة فواتير المبيعات</span></a>{{end}}
   {{if can .User "view_customer_report"}}<a class="card" href="/reports/customer"><span class="card-icon">{{template "icon-users"}}</span><span class="card-title">تقرير العملاء</span><span class="card-desc">مبيعات وديون العملاء</span></a>{{end}}
   {{if can .User "manage_promotions"}}<a class="card" href="/promotions"><span class="card-icon">{{template "icon-gift"}}</span><span class="card-title">العروض والترويج</span><span class="card-desc">عروض وخصومات</span></a>{{end}}

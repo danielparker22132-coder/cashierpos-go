@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"cashierpos-go/internal/auth"
@@ -220,5 +221,27 @@ func TestSettingsResetDatabase(t *testing.T) {
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM Customers WHERE CustomerID=1`).Scan(&n)
 	if n != 1 {
 		t.Fatal("cash customer should be re-seeded after reset")
+	}
+}
+
+// TestFix19_AutoLockGlobalErrorWording pins the R19-D-F2 wording: the
+// global save error must say "بلا مدة عامة" — global 0 means "no global
+// value, per-user applies", not "disabled".
+func TestFix19_AutoLockGlobalErrorWording(t *testing.T) {
+	s, err := OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	admin := testAdmin()
+	err = s.SaveAutoLockMinutes(context.Background(), admin, 601)
+	if err == nil {
+		t.Fatal("auto-lock above 600 should be refused")
+	}
+	if !strings.Contains(err.Error(), "بلا مدة عامة") {
+		t.Fatalf("global save error = %q, want it to say بلا مدة عامة", err.Error())
+	}
+	if strings.Contains(err.Error(), "معطل") {
+		t.Fatalf("global save error = %q, must not label the global value معطل", err.Error())
 	}
 }

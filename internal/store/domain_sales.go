@@ -180,11 +180,17 @@ type preparedLine struct {
 
 // avgUnitPrice is the weighted-average unit price of a merged line:
 // round(gross * 1000 / qty). Gross and qty are always >= 0 here.
-func avgUnitPrice(gross money.Cents, qty money.Qty) money.Cents {
+// R19-B-F2: the gross*1000 step is checked — a merged gross near the
+// int64 ceiling used to wrap here and store a wrong unit price.
+func avgUnitPrice(gross money.Cents, qty money.Qty) (money.Cents, error) {
 	if qty <= 0 {
-		return 0
+		return 0, nil
 	}
-	return money.Cents((int64(gross)*1000 + int64(qty)/2) / int64(qty))
+	v, err := money.MulDivRound(int64(gross), 1000, int64(qty))
+	if err != nil {
+		return 0, err
+	}
+	return money.Cents(v), nil
 }
 
 func (s *Store) prepareSaleLines(ctx context.Context, user *auth.User, in CreateInvoiceInput) ([]*preparedLine, []string, error) {
@@ -220,7 +226,13 @@ func (s *Store) prepareSaleLines(ctx context.Context, user *auth.User, in Create
 		// user confirmation (allowBelowCost) — otherwise refuse with
 		// the confirm prompt text. Weighted lines are priced by
 		// PricePerKg, which is also checked here.
+		// FIX-17 SW2-L11: a role that can never confirm (no
+		// PermApproveBelowCost — supervisor, cashier) gets the uniform
+		// denial NOW, not a confirm prompt it could never accept.
 		if unitPrice < p.BuyPrice && !in.AllowBelowCost {
+			if err := rbac.Require(user.Role, rbac.PermApproveBelowCost); err != nil {
+				return nil, nil, err
+			}
 			return nil, nil, errors.New("السعر أقل من سعر الشراء — هل تريد البيع بخسارة؟")
 		}
 		// Any price that is not the sale-type price is a price edit
@@ -249,10 +261,16 @@ func (s *Store) prepareSaleLines(ctx context.Context, user *auth.User, in Create
 		// amount. The displayed unit price becomes the weighted
 		// average when prices differ.
 		key := raw.ProductID
-		addGross := money.MulQty(unitPrice, raw.Qty)
+		addGross, err := money.MulQty(unitPrice, raw.Qty)
+		if err != nil {
+			return nil, nil, err
+		}
 		if m, ok := merged[key]; ok {
 			m.qty += raw.Qty
-			m.lineGross += addGross
+			m.lineGross, err = money.AddChecked(m.lineGross, addGross)
+			if err != nil {
+				return nil, nil, err
+			}
 			m.itemDiscount += raw.ItemDiscount
 			if unitPrice != m.unitPrice {
 				m.multiPrice = true
@@ -272,7 +290,11 @@ func (s *Store) prepareSaleLines(ctx context.Context, user *auth.User, in Create
 	for _, k := range order {
 		ln := merged[k]
 		if ln.multiPrice {
-			ln.unitPrice = avgUnitPrice(ln.lineGross, ln.qty)
+			avg, aerr := avgUnitPrice(ln.lineGross, ln.qty)
+			if aerr != nil {
+				return nil, nil, aerr
+			}
+			ln.unitPrice = avg
 		}
 		lines = append(lines, ln)
 	}
@@ -324,7 +346,11 @@ func (s *Store) prepareSaleLines(ctx context.Context, user *auth.User, in Create
 		}
 		gross += ln.lineGross
 		totalItemDisc += ln.itemDiscount
-		profit += ln.lineTotal - money.MulQty(p.BuyPrice, ln.qty)
+		cost, err := money.MulQty(p.BuyPrice, ln.qty)
+		if err != nil {
+			return nil, nil, err
+		}
+		profit += ln.lineTotal - cost
 	}
 	_ = gross
 	_ = totalItemDisc
@@ -342,21 +368,28 @@ func parseDate(s string) (time.Time, error) {
 // all-zero base yields all zeros. Used for the invoice-level promo and
 // the manual invoice discount, in creation and in the sale preview, so
 // both compute the same per-line net (FIX-2 M-3).
-func AllocProRata(total money.Cents, bases []money.Cents) []money.Cents {
+// R19-B-F2: the total*b step is checked (MulDiv) and the base sum is
+// checked (AddChecked) — a pro-rata share used to wrap on huge
+// invoice totals and store a wrong per-line promo split.
+func AllocProRata(total money.Cents, bases []money.Cents) ([]money.Cents, error) {
 	shares := make([]money.Cents, len(bases))
 	if total <= 0 {
-		return shares
+		return shares, nil
 	}
 	var baseTotal money.Cents
 	last := -1
 	for i, b := range bases {
 		if b > 0 {
-			baseTotal += b
+			var err error
+			baseTotal, err = money.AddChecked(baseTotal, b)
+			if err != nil {
+				return nil, err
+			}
 			last = i
 		}
 	}
 	if baseTotal <= 0 || last < 0 {
-		return shares
+		return shares, nil
 	}
 	remainder := total
 	for i, b := range bases {
@@ -366,11 +399,15 @@ func AllocProRata(total money.Cents, bases []money.Cents) []money.Cents {
 		if i == last {
 			shares[i] = remainder
 		} else {
-			shares[i] = money.Cents(int64(total) * int64(b) / int64(baseTotal))
+			v, err := money.MulDiv(int64(total), int64(b), int64(baseTotal))
+			if err != nil {
+				return nil, err
+			}
+			shares[i] = money.Cents(v)
 			remainder -= shares[i]
 		}
 	}
-	return shares
+	return shares, nil
 }
 
 // CreateInvoice posts a sale atomically (S-22).
@@ -451,9 +488,23 @@ func (s *Store) CreateInvoice(ctx context.Context, user *auth.User, in CreateInv
 	var gross, totalItemDisc, profit money.Cents
 	totalQty := map[int64]money.Qty{}
 	for _, ln := range lines {
-		gross += ln.lineGross
-		totalItemDisc += ln.itemDiscount
-		profit += ln.lineTotal - money.MulQty(ln.product.BuyPrice, ln.qty)
+		var err error
+		gross, err = money.AddChecked(gross, ln.lineGross)
+		if err != nil {
+			return nil, err
+		}
+		totalItemDisc, err = money.AddChecked(totalItemDisc, ln.itemDiscount)
+		if err != nil {
+			return nil, err
+		}
+		cost, err := money.MulQty(ln.product.BuyPrice, ln.qty)
+		if err != nil {
+			return nil, err
+		}
+		profit, err = money.AddChecked(profit, ln.lineTotal-cost)
+		if err != nil {
+			return nil, err
+		}
 		totalQty[ln.productID] += ln.qty
 	}
 	// Promos auto-apply after merge + manual discounts (R-P1..R-P6).
@@ -538,8 +589,14 @@ func (s *Store) CreateInvoice(ctx context.Context, user *auth.User, in CreateInv
 		}
 		bases[i] = b
 	}
-	invoiceShares := AllocProRata(invoicePromo, bases)
-	invDiscShares := AllocProRata(effInvDiscount, bases)
+	invoiceShares, err := AllocProRata(invoicePromo, bases)
+	if err != nil {
+		return nil, err
+	}
+	invDiscShares, err := AllocProRata(effInvDiscount, bases)
+	if err != nil {
+		return nil, err
+	}
 	invoiceShare := map[int]money.Cents{}
 	for i, sh := range invoiceShares {
 		invoiceShare[i] = sh
@@ -563,12 +620,21 @@ func (s *Store) CreateInvoice(ctx context.Context, user *auth.User, in CreateInv
 	}
 	belowCostNet := false
 	for i, ln := range lines {
-		if netLineTotal[i] < money.MulQty(ln.product.BuyPrice, ln.qty) {
+		cost, err := money.MulQty(ln.product.BuyPrice, ln.qty)
+		if err != nil {
+			return nil, err
+		}
+		if netLineTotal[i] < cost {
 			belowCostNet = true
 			break
 		}
 	}
 	if belowCostNet && !in.AllowBelowCost {
+		// FIX-17 SW2-L11: same upfront denial as the unit-price path —
+		// a role that can never confirm never sees the prompt.
+		if err := rbac.Require(user.Role, rbac.PermApproveBelowCost); err != nil {
+			return nil, err
+		}
 		return nil, errors.New("السعر أقل من سعر الشراء — هل تريد البيع بخسارة؟")
 	}
 	net := gross - totalItemDisc - linePromoTotal - effInvDiscount - invoicePromo
@@ -577,7 +643,19 @@ func (s *Store) CreateInvoice(ctx context.Context, user *auth.User, in CreateInv
 	}
 	profit = profit - effInvDiscount - linePromoTotal - invoicePromo - promo.FreeCost
 
+	// FIX-12 SW-H05: validate the supplied amount BEFORE any forcing.
+	// A cash customer may not carry a remaining balance, so a supplied
+	// paid that is negative, above net, or below net (but non-zero) is
+	// refused with المبلغ المدفوع غير صحيح instead of being silently
+	// rewritten to net. paid == 0 means "unspecified" and keeps the
+	// S-19 auto-pay-full convention the POS form (which autofills paid
+	// with the net) and the API clients rely on; paid == net is
+	// accepted as-is. The old order (force first, validate after)
+	// made the check dead code for every cash sale.
 	paid := in.Paid
+	if customerID == 1 && paid != 0 && paid != net {
+		return nil, errors.New("المبلغ المدفوع غير صحيح")
+	}
 	if customerID == 1 {
 		// The cash customer always pays the full net (S-19).
 		paid = net
@@ -805,6 +883,33 @@ func (s *Store) CreateInvoice(ctx context.Context, user *auth.User, in CreateInv
 			&invoiceNumber, invoiceID, customerID, custName, notes); err != nil {
 			return err
 		}
+		// FIX-12 SW-M09 (lane D): detail lines for the sale audit entry,
+		// so the audit detail page shows qty/price before-after per line
+		// instead of always "لا توجد بنود تفصيلية لهذا السجل". The LogID
+		// is the row just written (InvoiceID is unique per invoice).
+		// QuantityBefore is the pre-sale stock, QuantityAfter is
+		// before − sold qty on this line; PriceBefore is the standard
+		// price for the sale type, PriceAfter the price actually charged.
+		var saleLogID int64
+		if err := tx.QueryRow(`SELECT LogID FROM AuditLog WHERE ActionType='إنشاء فاتورة' AND InvoiceID=? ORDER BY LogID DESC LIMIT 1`, invoiceID).Scan(&saleLogID); err == nil {
+			soldSoFar := map[int64]money.Qty{}
+			for _, ln := range lines {
+				before := money.Qty(0)
+				if b, ok := stockBefore[ln.productID]; ok {
+					before = b.before
+				}
+				after := before - soldSoFar[ln.productID] - ln.qty
+				soldSoFar[ln.productID] += ln.qty
+				if err := insertAuditDetailTx(tx, saleLogID, AuditDetail{
+					ProductID: ln.productID, ProductName: ln.product.Name,
+					QuantityBefore: before, QuantityAfter: after, QuantityChange: -ln.qty,
+					PriceBefore: PriceForSaleType(ln.product, in.SaleType), PriceAfter: ln.unitPrice,
+					LineTotal: ln.lineTotal,
+				}); err != nil {
+					return err
+				}
+			}
+		}
 		if err := auditInvoiceOffersTx(tx, user, invoiceNumber, invoiceID, appliedOffers); err != nil {
 			return err
 		}
@@ -945,26 +1050,35 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 	var paidCollected money.Cents
 	_ = s.DB.QueryRow(`SELECT COALESCE(SUM(Amount),0) FROM Payments WHERE InvoiceID=?`, invoiceID).Scan(&paidCollected)
 	// Sold / already-returned per product.
-	detailRows, err := s.DB.Query(`SELECT ProductID,ProductName,Quantity,BuyPrice FROM InvoiceDetails WHERE InvoiceID=? ORDER BY DetailID`, invoiceID)
+	detailRows, err := s.DB.Query(`SELECT ProductID,ProductName,Quantity,BuyPrice,UnitPrice,TotalPrice FROM InvoiceDetails WHERE InvoiceID=? ORDER BY DetailID`, invoiceID)
 	if err != nil {
 		return 0, err
 	}
 	type det struct {
-		pid  int64
-		name string
-		qty  money.Qty
-		buy  money.Cents
+		pid       int64
+		name      string
+		qty       money.Qty
+		buy       money.Cents
+		unitPrice money.Cents
+		total     money.Cents
 	}
 	var dets []det
 	soldPerProduct := map[int64]money.Qty{}
 	for detailRows.Next() {
 		var d det
-		if err := detailRows.Scan(&d.pid, &d.name, &d.qty, &d.buy); err != nil {
+		if err := detailRows.Scan(&d.pid, &d.name, &d.qty, &d.buy, &d.unitPrice, &d.total); err != nil {
 			detailRows.Close()
 			return 0, err
 		}
 		dets = append(dets, d)
-		soldPerProduct[d.pid] += d.qty
+		// R21-C-F1/F2: checked — a stored absurd detail qty must
+		// refuse the cancel instead of wrapping the sold total.
+		sold, aerr := money.AddQtyChecked(soldPerProduct[d.pid], d.qty)
+		if aerr != nil {
+			detailRows.Close()
+			return 0, aerr
+		}
+		soldPerProduct[d.pid] = sold
 	}
 	detailRows.Close()
 	returnedPerProduct := map[int64]money.Qty{}
@@ -993,7 +1107,13 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 		if kept < 0 {
 			kept = 0
 		}
-		if earned := EarnedFreeUnits(kept, info.BuyX, info.FreeQty); earned > 0 {
+		// R20-B-F2b: checked — a stored absurd X/Y must refuse the
+		// cancellation instead of restoring a wrapped free qty.
+		earned, eerr := EarnedFreeUnitsChecked(kept, info.BuyX, info.FreeQty)
+		if eerr != nil {
+			return 0, eerr
+		}
+		if earned > 0 {
 			freeRestore[pid] = earned
 		}
 	}
@@ -1003,7 +1123,17 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 		if restore < 0 {
 			restore = 0
 		}
-		restorePerProduct[pid] = restore + freeRestore[pid]
+		// R21-C-F1/F2: checked — the earned grant can fit int64
+		// (EarnedFreeUnitsChecked only refuses a grant that does
+		// not fit) yet sit so close to MaxInt64 that restore +
+		// grant wraps: 2000 + 9223372036854775000 wrapped to
+		// -9223372036854774616 and drove stock negative. Refuse
+		// the cancel instead of restoring a wrapped quantity.
+		total, aerr := money.AddQtyChecked(restore, freeRestore[pid])
+		if aerr != nil {
+			return 0, aerr
+		}
+		restorePerProduct[pid] = total
 	}
 	// Refund shift: the invoice's own shift when still open, else the
 	// caller's open shift today; refused when no shift is open at all.
@@ -1024,11 +1154,22 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 	}
 	now := Now()
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`UPDATE Invoices SET IsCanceled=1,CanceledBy=?,CanceledAt=?,CancelReason=? WHERE InvoiceID=?`,
+		// FIX-18 R18-A-L01: zero the remaining debt on cancel — the
+		// API used to return remaining:<amount> with
+		// is_canceled:true. PaidAmount is left untouched as the
+		// refund record.
+		if _, err := tx.Exec(`UPDATE Invoices SET IsCanceled=1,RemainingAmount=0,CanceledBy=?,CanceledAt=?,CancelReason=? WHERE InvoiceID=?`,
 			user.UserName, now, reason, invoiceID); err != nil {
 			return err
 		}
 		restoredDone := map[int64]bool{}
+		// FIX-17 SW2-L02: pre-cancel stock per product, for the audit
+		// detail rows written after the cancel audit entry below.
+		stockBefore := map[int64]money.Qty{}
+		// R21-C-F1/F2: post-restore stock per product, computed with
+		// the same checked addition as the UPDATE below — the audit
+		// QuantityAfter must never re-add the restore unchecked.
+		stockAfter := map[int64]money.Qty{}
 		for _, d := range dets {
 			restore := money.Qty(0)
 			if !restoredDone[d.pid] {
@@ -1037,8 +1178,20 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 			}
 			p, err := loadProductTx(tx, d.pid)
 			if err == nil {
+				if _, ok := stockBefore[d.pid]; !ok {
+					stockBefore[d.pid] = p.Quantity
+				}
+				// R21-C-F1/F2: checked — the wrapped restore is
+				// already refused above, but a stored stock sitting
+				// in the top int64 band must still refuse here
+				// instead of wrapping on the final addition.
+				newQty, aerr := money.AddQtyChecked(p.Quantity, restore)
+				if aerr != nil {
+					return aerr
+				}
+				stockAfter[d.pid] = newQty
 				if _, err := tx.Exec(`UPDATE Products SET Quantity=? WHERE ProductID=?`,
-					int64(p.Quantity+restore), d.pid); err != nil {
+					int64(newQty), d.pid); err != nil {
 					return err
 				}
 			}
@@ -1082,8 +1235,38 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 			details += fmt.Sprintf(" — مبلغ محصّل غير نقدي قبل الإلغاء: %s — لا حركة صندوق له (لم يدخل الدرج)",
 				money.FormatEGP(paidCollected-cashRefund))
 		}
-		return AuditTx(tx, user.ID, user.UserName, "إلغاء فاتورة", "إلغاء",
-			&inv.Number, invoiceID, inv.CustomerID, custName, details)
+		if err := AuditTx(tx, user.ID, user.UserName, "إلغاء فاتورة", "إلغاء",
+			&inv.Number, invoiceID, inv.CustomerID, custName, details); err != nil {
+			return err
+		}
+		// FIX-17 SW2-L02 (cancel half): per-line audit detail rows,
+		// mirroring the sale path (FIX-12 SW-M09). QuantityBefore is the
+		// stock before the restore, QuantityAfter after it (restore =
+		// sold minus returned, free units included); the price is
+		// unchanged by a cancel, so PriceBefore == PriceAfter == the
+		// unit price charged. The restore is charged to the first row
+		// of a product only, so the changes sum to the total restore.
+		var cancelLogID int64
+		if err := tx.QueryRow(`SELECT LogID FROM AuditLog WHERE ActionType='إلغاء فاتورة' AND InvoiceID=? ORDER BY LogID DESC LIMIT 1`, invoiceID).Scan(&cancelLogID); err == nil {
+			changedSoFar := map[int64]bool{}
+			for _, d := range dets {
+				before := stockBefore[d.pid]
+				change := money.Qty(0)
+				if !changedSoFar[d.pid] {
+					change = restorePerProduct[d.pid]
+					changedSoFar[d.pid] = true
+				}
+				if err := insertAuditDetailTx(tx, cancelLogID, AuditDetail{
+					ProductID: d.pid, ProductName: d.name,
+					QuantityBefore: before, QuantityAfter: stockAfter[d.pid], QuantityChange: change,
+					PriceBefore: d.unitPrice, PriceAfter: d.unitPrice,
+					LineTotal: d.total,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err
@@ -1093,9 +1276,12 @@ func (s *Store) CancelInvoice(ctx context.Context, user *auth.User, invoiceID in
 
 // ListInvoices lists invoices in a date range (YYYY-MM-DD), newest first.
 // userID 0 = all users. All roles may view (view-only for warehouse).
-// FIX-1 M7: login is now enforced in the service layer (nil user refused);
-// no narrower permission applies — invoice viewing is open to every
-// logged-in role by design.
+// FIX-1 M7: login is now enforced in the service layer (nil user refused).
+// FIX-19 R19-D-F1: the store applies NO role scoping of its own — the
+// CALLER must pass the caller's own ID for the cashier role (mirroring
+// GetInvoice's cashier own-only gate, FIX-3 M4); passing 0 for a cashier
+// leaks every cashier's invoices. Admin/manager/supervisor/warehouse
+// pass 0 (all invoices).
 func (s *Store) ListInvoices(ctx context.Context, user *auth.User, fromDate, toDate string, userID int64) ([]*InvoiceSummary, error) {
 	if err := requireUser(user, ""); err != nil {
 		return nil, err
@@ -1142,14 +1328,17 @@ func (s *Store) ListInvoices(ctx context.Context, user *auth.User, fromDate, toD
 	return out, rows.Err()
 }
 
-// ErrInvoiceForbidden is returned by GetInvoice when a cashier or
-// warehouse user tries to read another user's invoice (FIX-3 M4).
-// Handlers map it to HTTP 403.
+// ErrInvoiceForbidden is returned by GetInvoice when a cashier tries to
+// read another user's invoice (FIX-3 M4). Handlers map it to HTTP 403.
+// (FIX-17 SW2-L10: warehouse no longer gets this error — it views any
+// invoice read-only, §15 row 25.)
 var ErrInvoiceForbidden = errors.New("لا يمكنك عرض فاتورة مستخدم آخر")
 
 // GetInvoice returns a full invoice (header + lines + payments + offers).
-// FIX-3 M4: cashier/warehouse read only their own invoices;
-// admin/manager/supervisor may read any invoice.
+// FIX-3 M4: cashier reads only their own invoices; admin/manager/
+// supervisor may read any invoice. FIX-17 SW2-L10 (§15 row 25):
+// warehouse reads any invoice view-only (mutations stay gated by their
+// own permissions: cancel/create/return).
 func (s *Store) GetInvoice(ctx context.Context, user *auth.User, id int64) (*InvoiceDetail, error) {
 	if user == nil {
 		return nil, errors.New("يلزم تسجيل الدخول")
@@ -1176,7 +1365,7 @@ func (s *Store) GetInvoice(ctx context.Context, user *auth.User, id int64) (*Inv
 	if err != nil {
 		return nil, err
 	}
-	if rbac.EffectiveRole(user.Role) != rbac.RoleAdmin && user.Role != rbac.RoleSupervisor && ownerID != user.ID {
+	if rbac.EffectiveRole(user.Role) != rbac.RoleAdmin && user.Role != rbac.RoleSupervisor && user.Role != rbac.RoleWarehouse && ownerID != user.ID {
 		return nil, ErrInvoiceForbidden
 	}
 	d.Summary.CustomerName = custName.String
@@ -1250,7 +1439,14 @@ func (s *Store) InvoiceProfit(ctx context.Context, user *auth.User, id int64) (m
 	}
 	var profit money.Cents
 	for _, ln := range d.Lines {
-		profit += ln.TotalPrice - ln.PromoDiscount - money.MulQty(ln.BuyPrice, ln.Qty)
+		cost, err := money.MulQty(ln.BuyPrice, ln.Qty)
+		if err != nil {
+			return 0, err
+		}
+		profit, err = money.AddChecked(profit, ln.TotalPrice-ln.PromoDiscount-cost)
+		if err != nil {
+			return 0, err
+		}
 	}
 	// Free units' buy cost rides on the invoice's FreeCost.
 	var freeCost money.Cents
