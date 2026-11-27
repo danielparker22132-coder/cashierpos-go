@@ -825,15 +825,52 @@ func (s *Server) purchaseNewSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = r.ParseForm()
+	prodNames := r.Form["product"]
 	prodIDs := r.Form["product_id"]
 	qtys := r.Form["qty"]
 	prices := r.Form["price"]
 	batches := r.Form["batch"]
 	expiries := r.Form["expiry"]
+	// Purchase-form combobox: the typed product name wins when it is
+	// non-empty; the legacy product_id is the fallback for old posts.
+	// The name map is built lazily from the product list the handler
+	// already fetches elsewhere — no new store method.
+	var byName map[string]int64
+	nRows := len(prodIDs)
+	if len(prodNames) > nRows {
+		nRows = len(prodNames)
+	}
 	var lines []store.PurchaseLineInput
-	for i := range prodIDs {
-		pid, err := strconv.ParseInt(strings.TrimSpace(prodIDs[i]), 10, 64)
-		if err != nil || pid == 0 {
+	for i := 0; i < nRows; i++ {
+		var pid int64
+		name := ""
+		if i < len(prodNames) {
+			name = strings.TrimSpace(prodNames[i])
+		}
+		if name != "" {
+			if byName == nil {
+				products, _ := s.Store.ListProducts(r.Context(), u, false)
+				byName = make(map[string]int64, len(products))
+				for _, p := range products {
+					key := strings.ToLower(strings.TrimSpace(p.Name))
+					if _, exists := byName[key]; !exists {
+						byName[key] = p.ID
+					}
+				}
+			}
+			var ok bool
+			pid, ok = byName[strings.ToLower(name)]
+			if !ok {
+				s.renderPurchaseFormErr(w, r, fmt.Sprintf("الصنف '%s' غير موجود — أنشئه أولاً من صفحة المنتجات", name))
+				return
+			}
+		} else if i < len(prodIDs) {
+			var err error
+			pid, err = strconv.ParseInt(strings.TrimSpace(prodIDs[i]), 10, 64)
+			if err != nil || pid == 0 {
+				continue
+			}
+		} else {
 			continue
 		}
 		var q money.Qty

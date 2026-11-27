@@ -9,43 +9,44 @@
   </label>
   <label>تاريخ الاستحقاق (اختياري) <input type="date" name="due_date"></label>
   <h2>الأصناف (صنف واحد على الأقل — الكمية &gt; 0 وسعر الشراء &gt; 0)</h2>
+  <datalist id="purchase-products">{{range .Data.Products}}<option value="{{.Name}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</datalist>
   <table>
     <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الشراء (ج.م)</th><th>رقم التشغيلة</th><th>تاريخ الصلاحية</th></tr></thead>
     <tbody>
     <tr>
-      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6" placeholder="مثال 2.5"></td>
       <td><input name="price" inputmode="decimal" size="8" placeholder="مثال 12.50"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"></td>
+      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"></td>
+      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"></td>
+      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"></td>
+      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><select name="product_id"><option value="">— اختر صنفاً —</option>{{range .Data.Products}}<option value="{{.ID}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</select></td>
+      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"></td>
+      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     </tbody>
   </table>
@@ -62,6 +63,56 @@
   <label>ملاحظات <input name="notes"></label>
   <button type="submit" class="btn-primary">حفظ فاتورة الشراء</button>
   <a href="/vendors">إلغاء</a>
+<script>
+(function () {
+  function lastDay(y, m) {
+    return new Date(y, m + 1, 0).getDate();
+  }
+  function addMonths(d, n) {
+    var m = d.getMonth() + n;
+    var ny = d.getFullYear() + Math.floor(m / 12);
+    var nm = ((m % 12) + 12) % 12;
+    var day = Math.min(d.getDate(), lastDay(ny, nm));
+    return new Date(ny, nm, day);
+  }
+  function fmt(d) {
+    var mm = String(d.getMonth() + 1);
+    if (mm.length < 2) {
+      mm = "0" + mm;
+    }
+    var dd = String(d.getDate());
+    if (dd.length < 2) {
+      dd = "0" + dd;
+    }
+    return d.getFullYear() + "-" + mm + "-" + dd;
+  }
+  var sels = document.querySelectorAll(".expiry-duration");
+  sels.forEach(function (sel) {
+    sel.addEventListener("change", function () {
+      var v = sel.value;
+      if (!v) {
+        return;
+      }
+      var row = sel.closest("tr");
+      if (!row) {
+        return;
+      }
+      var input = row.querySelector('input[name="expiry"]');
+      if (!input) {
+        return;
+      }
+      var today = new Date();
+      var target;
+      if (v.charAt(v.length - 1) === "m") {
+        target = addMonths(today, parseInt(v.slice(0, -1), 10));
+      } else {
+        target = new Date(today.getFullYear(), today.getMonth(), today.getDate() + parseInt(v, 10));
+      }
+      input.value = fmt(target);
+    });
+  });
+})();
+</script>
 </form>
 <p class="hint">الدفع النقدي يتطلب شيفتاً مفتوحاً ولا يتجاوز رصيد الدرج. تحديث سعر الشراء للمنتج للمدير فقط</p>
 {{template "chrome-bottom" .}}
