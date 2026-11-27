@@ -849,6 +849,16 @@ func (s *Server) handlePromoDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderErr(w, r, "العرض", err)
 		return
 	}
+	// FIX-28 lane B: deletion is POST-only. The old GET link was gated on
+	// confirm(), which headless/cloud browsers auto-dismiss (confirm()
+	// returns false), so the click cancelled navigation and the link
+	// no-op'd while the route itself still deleted on GET. A non-POST
+	// request now redirects to the list with no action, the same shape
+	// as the sibling HTML mutating handlers (add-stock, stocktake).
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/promotions", http.StatusSeeOther)
+		return
+	}
 	if err := s.Store.DeleteOffer(r.Context(), u, id); err != nil {
 		_ = s.render(w, r, "promos.html", Page{Title: "العروض والترويج", Error: safeHTMLErr(err), Data: map[string]any{
 			"offers": []any{}, "canManage": true,

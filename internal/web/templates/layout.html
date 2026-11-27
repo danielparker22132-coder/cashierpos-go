@@ -20,7 +20,7 @@ set and a shared name would make every page render the same body. */}}
     {{if can .User "view_audit"}}{{if gt .UnreadAudit 0}}<a class="bell-link" href="/audit" title="تنبيهات تدقيق غير مقروءة">{{template "icon-bell"}} تنبيهات التدقيق <span class="count num">{{.UnreadAudit}}</span></a>{{end}}{{end}}
     {{if gt .UnreadNotif 0}}<a class="bell-link" href="/notifications" title="تنبيهات غير مقروءة">{{template "icon-bell"}} التنبيهات <span class="count num">{{.UnreadNotif}}</span></a>{{end}}
     <a class="toplink" href="/change-password">تغيير كلمة السر</a>
-    <a class="toplink" href="/logout" onclick="return confirm('هل تريد تسجيل الخروج؟')">خروج</a>
+    <a class="toplink" href="/logout">خروج</a>
   </div>{{end}}
 </header>
 {{if .MustChange}}<div class="alert warn">{{template "icon-alert"}} يجب تغيير كلمة السر الافتراضية قبل المتابعة — <a href="/change-password?forced=1">غيّرها الآن</a></div>{{end}}
