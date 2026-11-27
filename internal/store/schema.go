@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS PurchaseInvoiceDetails (
 	TotalPrice INTEGER NOT NULL DEFAULT 0,
 	BatchNumber TEXT DEFAULT '',
 	ExpiryDate TEXT,
+	ValidFrom TEXT,
 	FOREIGN KEY(PurchaseID) REFERENCES PurchaseInvoices(PurchaseID),
 	FOREIGN KEY(ProductID) REFERENCES Products(ProductID)
 );
@@ -382,6 +383,7 @@ CREATE TABLE IF NOT EXISTS ProductBatches (
 	BatchNumber TEXT DEFAULT '',
 	Quantity INTEGER NOT NULL DEFAULT 0,
 	ExpiryDate TEXT,
+	ValidFrom TEXT,
 	PurchasePrice INTEGER DEFAULT 0,
 	VendorID INTEGER,
 	PurchaseID INTEGER,
@@ -630,6 +632,10 @@ func (s *Store) migrate() error {
 	// PR4-L3: stored total for sale cash retained from canceled
 	// invoices (the RetainedCanceledCash bucket).
 	_, _ = s.DB.Exec(`ALTER TABLE Shifts ADD COLUMN RetainedCanceledCashTotal INTEGER DEFAULT 0`)
+	// Purchase-form from-to expiry: ValidFrom (YYYY-MM-DD or "") on
+	// the detail and batch rows. Old databases gain it on open.
+	_, _ = s.DB.Exec(`ALTER TABLE PurchaseInvoiceDetails ADD COLUMN ValidFrom TEXT`)
+	_, _ = s.DB.Exec(`ALTER TABLE ProductBatches ADD COLUMN ValidFrom TEXT`)
 	if err := s.backfillCashBoxKinds(); err != nil {
 		return err
 	}
@@ -749,6 +755,7 @@ func (s *Store) ensurePurchaseFKs() error {
 				BatchNumber TEXT DEFAULT '',
 				Quantity INTEGER NOT NULL DEFAULT 0,
 				ExpiryDate TEXT,
+				ValidFrom TEXT,
 				PurchasePrice INTEGER DEFAULT 0,
 				VendorID INTEGER,
 				PurchaseID INTEGER,
@@ -756,7 +763,7 @@ func (s *Store) ensurePurchaseFKs() error {
 				FOREIGN KEY(VendorID) REFERENCES Vendors(VendorID),
 				FOREIGN KEY(PurchaseID) REFERENCES PurchaseInvoices(PurchaseID)
 			)`,
-			columns: `BatchID,ProductID,BatchNumber,Quantity,ExpiryDate,PurchasePrice,VendorID,PurchaseID,CreatedDate`,
+			columns: `BatchID,ProductID,BatchNumber,Quantity,ExpiryDate,ValidFrom,PurchasePrice,VendorID,PurchaseID,CreatedDate`,
 		},
 	}
 	for _, j := range jobs {

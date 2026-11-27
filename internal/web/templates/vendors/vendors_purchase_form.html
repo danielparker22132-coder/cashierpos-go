@@ -1,6 +1,6 @@
 {{template "chrome-top" .}}
 <h1>فاتورة شراء جديدة</h1>
-<form method="post" action="/purchases/new" class="form">
+<form method="post" action="/purchases/new" class="form" style="max-width:1020px">
   <label>المورد *
     <select name="vendor_id" required>
       <option value="">— اختر المورد —</option>
@@ -11,42 +11,42 @@
   <h2>الأصناف (صنف واحد على الأقل — الكمية &gt; 0 وسعر الشراء &gt; 0)</h2>
   <datalist id="purchase-products">{{range .Data.Products}}<option value="{{.Name}}">{{.Name}} — المخزون {{qty .Quantity}} {{.Unit}}</option>{{end}}</datalist>
   <table>
-    <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الشراء (ج.م)</th><th>رقم التشغيلة</th><th>تاريخ الصلاحية</th></tr></thead>
+    <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الشراء (ج.م)</th><th>رقم التشغيلة</th><th>الصلاحية (من — إلى)</th></tr></thead>
     <tbody>
     <tr>
-      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
+      <td><input name="product" list="purchase-products" size="32" style="min-width:20em" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6" placeholder="مثال 2.5"></td>
       <td><input name="price" inputmode="decimal" size="8" placeholder="مثال 12.50"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
+      <td>من <input type="date" name="valid_from"><br>إلى <input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
+      <td><input name="product" list="purchase-products" size="32" style="min-width:20em" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
+      <td>من <input type="date" name="valid_from"><br>إلى <input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
+      <td><input name="product" list="purchase-products" size="32" style="min-width:20em" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
+      <td>من <input type="date" name="valid_from"><br>إلى <input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
+      <td><input name="product" list="purchase-products" size="32" style="min-width:20em" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
+      <td>من <input type="date" name="valid_from"><br>إلى <input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     <tr>
-      <td><input name="product" list="purchase-products" placeholder="— اكتب اسم الصنف —"></td>
+      <td><input name="product" list="purchase-products" size="32" style="min-width:20em" placeholder="— اكتب اسم الصنف —"></td>
       <td><input name="qty" inputmode="decimal" size="6"></td>
       <td><input name="price" inputmode="decimal" size="8"></td>
       <td><input name="batch" size="8"></td>
-      <td><input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
+      <td>من <input type="date" name="valid_from"><br>إلى <input type="date" name="expiry"> <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></td>
     </tr>
     </tbody>
   </table>
@@ -102,11 +102,20 @@
         return;
       }
       var today = new Date();
+      var base = today;
+      var fromInput = row.querySelector('input[name="valid_from"]');
+      if (fromInput && fromInput.value) {
+        var parts = fromInput.value.split("-");
+        var parsed = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+        if (!isNaN(parsed.getTime())) {
+          base = parsed;
+        }
+      }
       var target;
       if (v.charAt(v.length - 1) === "m") {
-        target = addMonths(today, parseInt(v.slice(0, -1), 10));
+        target = addMonths(base, parseInt(v.slice(0, -1), 10));
       } else {
-        target = new Date(today.getFullYear(), today.getMonth(), today.getDate() + parseInt(v, 10));
+        target = new Date(base.getFullYear(), base.getMonth(), base.getDate() + parseInt(v, 10));
       }
       input.value = fmt(target);
     });

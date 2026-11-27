@@ -132,6 +132,11 @@ input,select,textarea{
   padding:12px;border:1px solid var(--border-strong);border-radius:8px;font-size:16px;
   background:var(--surface);color:var(--text);font-family:inherit;width:100%;
 }
+/* Text typed or read inside a field is centered, everywhere in the
+   program (jony's rule). Text-like inputs and textareas only: buttons,
+   checkboxes, radios, hidden and submit inputs are excluded, and
+   labels, headings, table cells and navigation are untouched. */
+input:not([type]),input[type="text"],input[type="number"],input[type="date"],input[type="password"],input[type="search"],input[type="tel"],input[type="email"],input[type="url"],select,textarea{text-align:center}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
 button,.btn{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;

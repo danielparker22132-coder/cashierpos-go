@@ -12,7 +12,7 @@
       {{if index $.Data "canViewProfit"}}<td class="num">{{egp .PurchasePrice}}</td>
       <td class="num">{{egp .Total}}</td>{{end}}
       <td class="num">{{.BatchNumber}}</td>
-      <td class="num">{{.ExpiryDate}}</td>
+      <td class="num">{{if and .ValidFrom .ExpiryDate}}من {{.ValidFrom}} إلى {{.ExpiryDate}}{{else if .ValidFrom}}من {{.ValidFrom}}{{else}}{{.ExpiryDate}}{{end}}</td>
     </tr>
   {{end}}
   </tbody>

@@ -175,10 +175,19 @@ func TestPurchaseForm_TemplateMarkers(t *testing.T) {
 	if n := strings.Count(body, `class="expiry-duration"`); n != 5 {
 		t.Fatalf("duration selects = %d, want 5", n)
 	}
-	for _, want := range []string{`value="7">أسبوع`, `value="14">أسبوعين`, `value="1m">شهر`, `value="12m">سنة`, `value="24m">سنتين`} {
+	for _, want := range []string{`value="7">أسبوع`, `value="14">أسبوعين`, `value="1m">شهر`, `value="2m">شهرين`, `value="3m">3 شهور`, `value="6m">6 شهور`, `value="12m">سنة`, `value="24m">سنتين`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("form lacks duration option %q", want)
 		}
+	}
+	if n := strings.Count(body, `name="valid_from"`); n != 6 {
+		t.Fatalf(`occurrences of name="valid_from" = %d, want 6 (5 row inputs + 1 JS selector)`, n)
+	}
+	if n := strings.Count(body, `name="expiry"`); n != 6 {
+		t.Fatalf(`occurrences of name="expiry" = %d, want 6 (5 row inputs + 1 JS selector)`, n)
+	}
+	if n := strings.Count(body, `type="date" name="valid_from"`); n != 5 {
+		t.Fatalf(`date inputs name="valid_from" = %d, want 5`, n)
 	}
 	if strings.Contains(body, `<select name="product_id">`) {
 		t.Fatalf("form still renders the old product_id select")
@@ -192,12 +201,136 @@ func TestPurchaseForm_TemplateMarkers(t *testing.T) {
 		t.Fatalf("form lacks the expiry-duration <script> block")
 	}
 	script := body[start:end]
-	for _, want := range []string{"expiry-duration", "addMonths", "new Date(y, m + 1, 0)", "closest"} {
+	for _, want := range []string{"expiry-duration", "addMonths", "new Date(y, m + 1, 0)", "closest", "valid_from", "fromInput"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("duration script lacks %q", want)
 		}
 	}
 	if strings.Contains(script, "//") {
 		t.Fatalf("duration script contains a // comment marker")
+	}
+}
+
+func purchaseFormQueryString(t *testing.T, e *e2eEnv, query string) string {
+	t.Helper()
+	var v *string
+	if err := e.store.DB.QueryRow(query).Scan(&v); err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func TestPurchaseForm_ValidFromStoredInDetailsAndBatches(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	vid := fix25BVendor(t, e, admin, "مورد شراء و")
+	e.createProduct(admin, "PF-G1", "سكر", "15.00", "100")
+
+	code, loc, _ := e.postFormLoc(admin, "/purchases/new", url.Values{
+		"vendor_id": {fmt.Sprint(vid)}, "paid": {"0"}, "method": {"Visa"},
+		"product": {"سكر"}, "qty": {"2"}, "price": {"10.00"},
+		"batch": {"B-77"}, "valid_from": {"2026-01-15"}, "expiry": {"2026-07-15"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("POST /purchases/new with valid_from: status = %d, want 303 (loc %q)", code, loc)
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ValidFrom FROM PurchaseInvoiceDetails WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "2026-01-15" {
+		t.Fatalf("PurchaseInvoiceDetails.ValidFrom = %q, want %q", got, "2026-01-15")
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ExpiryDate FROM PurchaseInvoiceDetails WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "2026-07-15" {
+		t.Fatalf("PurchaseInvoiceDetails.ExpiryDate = %q, want %q", got, "2026-07-15")
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ValidFrom FROM ProductBatches WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "2026-01-15" {
+		t.Fatalf("ProductBatches.ValidFrom = %q, want %q", got, "2026-01-15")
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ExpiryDate FROM ProductBatches WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "2026-07-15" {
+		t.Fatalf("ProductBatches.ExpiryDate = %q, want %q", got, "2026-07-15")
+	}
+}
+
+func TestPurchaseForm_EmptyValidFromStoredEmpty(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	vid := fix25BVendor(t, e, admin, "مورد شراء ز")
+	e.createProduct(admin, "PF-H1", "سكر", "15.00", "100")
+
+	code, _, _ := e.postFormLoc(admin, "/purchases/new", url.Values{
+		"vendor_id": {fmt.Sprint(vid)}, "paid": {"0"}, "method": {"Visa"},
+		"product": {"سكر"}, "qty": {"1"}, "price": {"10.00"},
+		"batch": {"B-78"}, "expiry": {"2026-07-15"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("POST /purchases/new without valid_from: status = %d, want 303", code)
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ValidFrom FROM PurchaseInvoiceDetails WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "" {
+		t.Fatalf("PurchaseInvoiceDetails.ValidFrom = %q, want empty", got)
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ValidFrom FROM ProductBatches WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "" {
+		t.Fatalf("ProductBatches.ValidFrom = %q, want empty", got)
+	}
+}
+
+func TestPurchaseForm_OnlyValidFromCreatesBatch(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	vid := fix25BVendor(t, e, admin, "مورد شراء ح")
+	e.createProduct(admin, "PF-I1", "سكر", "15.00", "100")
+
+	code, _, _ := e.postFormLoc(admin, "/purchases/new", url.Values{
+		"vendor_id": {fmt.Sprint(vid)}, "paid": {"0"}, "method": {"Visa"},
+		"product": {"سكر"}, "qty": {"1"}, "price": {"10.00"},
+		"valid_from": {"2026-02-01"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("POST /purchases/new with only valid_from: status = %d, want 303", code)
+	}
+	if n := purchaseFormCount(t, e); n != 1 {
+		t.Fatalf("purchases created = %d, want 1", n)
+	}
+	if n := e.queryInt(`SELECT COUNT(*) FROM ProductBatches WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); n != 1 {
+		t.Fatalf("ProductBatches rows for the purchase = %d, want 1 (from-date alone must create a batch)", n)
+	}
+	if got := purchaseFormQueryString(t, e, `SELECT ValidFrom FROM ProductBatches WHERE PurchaseID=(SELECT MAX(PurchaseID) FROM PurchaseInvoices)`); got != "2026-02-01" {
+		t.Fatalf("ProductBatches.ValidFrom = %q, want %q", got, "2026-02-01")
+	}
+}
+
+func TestPurchaseForm_DetailShowsFromTo(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	vid := fix25BVendor(t, e, admin, "مورد شراء ط")
+	e.createProduct(admin, "PF-J1", "سكر", "15.00", "100")
+
+	code, loc, _ := e.postFormLoc(admin, "/purchases/new", url.Values{
+		"vendor_id": {fmt.Sprint(vid)}, "paid": {"0"}, "method": {"Visa"},
+		"product": {"سكر"}, "qty": {"1"}, "price": {"10.00"},
+		"batch": {"B-79"}, "valid_from": {"2026-01-15"}, "expiry": {"2026-07-15"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("POST /purchases/new: status = %d, want 303", code)
+	}
+	code, body := e.get(admin, loc)
+	if code != http.StatusOK {
+		t.Fatalf("GET %s: status = %d, want 200", loc, code)
+	}
+	if !strings.Contains(body, "من 2026-01-15 إلى 2026-07-15") {
+		t.Fatalf("purchase detail lacks from-to range: %q", truncate(body, 600))
+	}
+}
+
+func TestPurchaseForm_CenteredFieldTextRule(t *testing.T) {
+	e, admin, _, _ := fix25BEnv(t)
+	code, body := e.get(admin, "/static/style.css")
+	if code != http.StatusOK {
+		t.Fatalf("GET /static/style.css: status = %d, want 200", code)
+	}
+	for _, want := range []string{
+		`input:not([type])`, `input[type="text"]`, `input[type="number"]`,
+		`input[type="date"]`, `input[type="password"]`, `input[type="search"]`,
+		`input[type="tel"]`, `input[type="email"]`, `input[type="url"]`,
+		`textarea{text-align:center}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("style.css lacks centered-field-text rule part %q", want)
+		}
 	}
 }

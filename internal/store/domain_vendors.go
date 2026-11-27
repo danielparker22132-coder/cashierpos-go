@@ -388,6 +388,7 @@ type PurchaseLineInput struct {
 	PurchasePrice money.Cents
 	BatchNumber   string
 	ExpiryDate    string // YYYY-MM-DD or ""
+	ValidFrom     string // YYYY-MM-DD or "" (from-date of the from-to expiry range)
 }
 
 // PurchaseInput carries a purchase invoice.
@@ -425,6 +426,7 @@ type PurchaseLine struct {
 	Total         money.Cents
 	BatchNumber   string
 	ExpiryDate    string
+	ValidFrom     string
 }
 
 // PurchaseDetail is a purchase invoice for display/print (V-07).
@@ -532,9 +534,9 @@ func (s *Store) CreatePurchase(ctx context.Context, user *auth.User, in Purchase
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`INSERT INTO PurchaseInvoiceDetails(PurchaseID,ProductID,ProductName,Quantity,PurchasePrice,TotalPrice,BatchNumber,ExpiryDate)
-				VALUES(?,?,?,?,?,?,?,?)`, purchaseID, ln.ProductID, prodName, int64(ln.Qty), int64(ln.PurchasePrice), int64(lineTotal),
-				strings.TrimSpace(ln.BatchNumber), strings.TrimSpace(ln.ExpiryDate)); err != nil {
+			if _, err := tx.Exec(`INSERT INTO PurchaseInvoiceDetails(PurchaseID,ProductID,ProductName,Quantity,PurchasePrice,TotalPrice,BatchNumber,ExpiryDate,ValidFrom)
+				VALUES(?,?,?,?,?,?,?,?,?)`, purchaseID, ln.ProductID, prodName, int64(ln.Qty), int64(ln.PurchasePrice), int64(lineTotal),
+				strings.TrimSpace(ln.BatchNumber), strings.TrimSpace(ln.ExpiryDate), strings.TrimSpace(ln.ValidFrom)); err != nil {
 				return err
 			}
 			newQty := curQty + int64(ln.Qty)
@@ -554,10 +556,10 @@ func (s *Store) CreatePurchase(ctx context.Context, user *auth.User, in Purchase
 					return err
 				}
 			}
-			if strings.TrimSpace(ln.BatchNumber) != "" || strings.TrimSpace(ln.ExpiryDate) != "" {
-				if _, err := tx.Exec(`INSERT INTO ProductBatches(ProductID,BatchNumber,Quantity,ExpiryDate,PurchasePrice,VendorID,PurchaseID,CreatedDate)
-					VALUES(?,?,?,?,?,?,?,?)`, ln.ProductID, strings.TrimSpace(ln.BatchNumber), int64(ln.Qty),
-					strings.TrimSpace(ln.ExpiryDate), int64(ln.PurchasePrice), in.VendorID, purchaseID, Today()); err != nil {
+			if strings.TrimSpace(ln.BatchNumber) != "" || strings.TrimSpace(ln.ExpiryDate) != "" || strings.TrimSpace(ln.ValidFrom) != "" {
+				if _, err := tx.Exec(`INSERT INTO ProductBatches(ProductID,BatchNumber,Quantity,ExpiryDate,ValidFrom,PurchasePrice,VendorID,PurchaseID,CreatedDate)
+					VALUES(?,?,?,?,?,?,?,?,?)`, ln.ProductID, strings.TrimSpace(ln.BatchNumber), int64(ln.Qty),
+					strings.TrimSpace(ln.ExpiryDate), strings.TrimSpace(ln.ValidFrom), int64(ln.PurchasePrice), in.VendorID, purchaseID, Today()); err != nil {
 					return err
 				}
 				if _, err := tx.Exec(`UPDATE Products SET BatchNumber=?,ExpiryDate=?,IsExpiryTracked=1 WHERE ProductID=?`,
@@ -606,7 +608,7 @@ func (s *Store) GetPurchase(ctx context.Context, id int64) (*PurchaseDetail, err
 	p.Remaining = money.Cents(rem)
 	p.DueDate = due.String
 	d := &PurchaseDetail{Purchase: &p}
-	rows, err := s.DB.Query(`SELECT ProductID,ProductName,Quantity,PurchasePrice,TotalPrice,BatchNumber,ExpiryDate
+	rows, err := s.DB.Query(`SELECT ProductID,ProductName,Quantity,PurchasePrice,TotalPrice,BatchNumber,ExpiryDate,ValidFrom
 		FROM PurchaseInvoiceDetails WHERE PurchaseID=? ORDER BY DetailID`, id)
 	if err != nil {
 		return nil, err
@@ -615,8 +617,8 @@ func (s *Store) GetPurchase(ctx context.Context, id int64) (*PurchaseDetail, err
 	for rows.Next() {
 		var ln PurchaseLine
 		var qty, price, tot int64
-		var batch, exp sql.NullString
-		if err := rows.Scan(&ln.ProductID, &ln.ProductName, &qty, &price, &tot, &batch, &exp); err != nil {
+		var batch, exp, vf sql.NullString
+		if err := rows.Scan(&ln.ProductID, &ln.ProductName, &qty, &price, &tot, &batch, &exp, &vf); err != nil {
 			return nil, err
 		}
 		ln.Qty = money.Qty(qty)
@@ -624,6 +626,7 @@ func (s *Store) GetPurchase(ctx context.Context, id int64) (*PurchaseDetail, err
 		ln.Total = money.Cents(tot)
 		ln.BatchNumber = batch.String
 		ln.ExpiryDate = exp.String
+		ln.ValidFrom = vf.String
 		d.Lines = append(d.Lines, &ln)
 	}
 	return d, rows.Err()

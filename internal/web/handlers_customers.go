@@ -831,6 +831,7 @@ func (s *Server) purchaseNewSubmit(w http.ResponseWriter, r *http.Request) {
 	prices := r.Form["price"]
 	batches := r.Form["batch"]
 	expiries := r.Form["expiry"]
+	validFroms := r.Form["valid_from"]
 	// Purchase-form combobox: the typed product name wins when it is
 	// non-empty; the legacy product_id is the fallback for old posts.
 	// The name map is built lazily from the product list the handler
@@ -895,6 +896,9 @@ func (s *Server) purchaseNewSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		if i < len(expiries) {
 			ln.ExpiryDate = strings.TrimSpace(expiries[i])
+		}
+		if i < len(validFroms) {
+			ln.ValidFrom = strings.TrimSpace(validFroms[i])
 		}
 		lines = append(lines, ln)
 	}
@@ -1532,7 +1536,7 @@ func (s *Server) apiPurchaseCreate(w http.ResponseWriter, r *http.Request) {
 			}
 			lines = append(lines, store.PurchaseLineInput{
 				ProductID: intVal(m, "product_id"), Qty: qty, PurchasePrice: price,
-				BatchNumber: strVal(m, "batch"), ExpiryDate: strVal(m, "expiry"),
+				BatchNumber: strVal(m, "batch"), ExpiryDate: strVal(m, "expiry"), ValidFrom: strVal(m, "valid_from"),
 			})
 		}
 	}
