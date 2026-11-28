@@ -297,6 +297,15 @@ func (s *Store) CreateProduct(ctx context.Context, user *auth.User, in ProductIn
 	if err := validateProductInput(in); err != nil {
 		return nil, err
 	}
+	// Fix-round-2 M1: setting an expiry date implies tracking — a product
+	// saved with an expiry but the "تتبّع الصلاحية" box unchecked must
+	// still reach the expiring-products list, alerts and hub counts (all
+	// require IsExpiryTracked=1). Server-side, so it holds for every
+	// entry path. Clearing the expiry does NOT untick tracking: the
+	// checkbox is then stored exactly as the caller set it.
+	if strings.TrimSpace(in.ExpiryDate) != "" {
+		in.IsExpiryTracked = true
+	}
 	if in.Unit == "" {
 		in.Unit = "قطعة"
 	}
@@ -364,6 +373,11 @@ func (s *Store) UpdateProduct(ctx context.Context, user *auth.User, id int64, in
 	}
 	if err := validateProductInput(in); err != nil {
 		return nil, err
+	}
+	// Fix-round-2 M1: an expiry date implies tracking (see CreateProduct);
+	// clearing the expiry leaves the tracking flag as the caller set it.
+	if strings.TrimSpace(in.ExpiryDate) != "" {
+		in.IsExpiryTracked = true
 	}
 	// G-8: the pre-update retail price, for the price-drop trigger below.
 	var oldRetail money.Cents

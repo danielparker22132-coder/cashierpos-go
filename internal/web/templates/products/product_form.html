@@ -15,7 +15,9 @@
   <label>الكمية <input name="quantity" value="{{if $p}}{{qty $p.Quantity}}{{else}}0{{end}}"></label>
   <label>الحد الأدنى للكمية <input name="min_quantity" value="{{if $p}}{{qty $p.MinQuantity}}{{else}}5{{end}}"></label>
   <label>الوحدة <input name="unit" value="{{if $p}}{{$p.Unit}}{{else}}قطعة{{end}}"></label>
+  <label>الصلاحية من <input type="date" name="expiry_from"></label>
   <label>تاريخ الصلاحية <input name="expiry_date" placeholder="YYYY-MM-DD" value="{{if $p}}{{$p.ExpiryDate}}{{end}}"></label>
+  <label>مدة الصلاحية <select class="expiry-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></label>
   <label>رقم التشغيلة <input name="batch_number" value="{{if $p}}{{$p.BatchNumber}}{{end}}"></label>
   <label>أيام تنبيه الصلاحية <input name="expiry_alert_days" value="{{if $p}}{{$p.ExpiryAlertDays}}{{else}}30{{end}}"></label>
   <label><input type="checkbox" name="is_expiry_tracked" value="1" {{if $p}}{{if $p.IsExpiryTracked}}checked{{end}}{{end}}> تتبّع الصلاحية</label>
@@ -34,4 +36,99 @@
   <button type="submit" class="btn-primary">حفظ</button>
   <a href="/products">إلغاء</a>
 </form>
+<script>
+(function () {
+  function lastDay(y, m) {
+    return new Date(y, m + 1, 0).getDate();
+  }
+  function addMonths(d, n) {
+    var m = d.getMonth() + n;
+    var ny = d.getFullYear() + Math.floor(m / 12);
+    var nm = ((m % 12) + 12) % 12;
+    var day = Math.min(d.getDate(), lastDay(ny, nm));
+    return new Date(ny, nm, day);
+  }
+  function fmt(d) {
+    var mm = String(d.getMonth() + 1);
+    if (mm.length < 2) {
+      mm = "0" + mm;
+    }
+    var dd = String(d.getDate());
+    if (dd.length < 2) {
+      dd = "0" + dd;
+    }
+    return d.getFullYear() + "-" + mm + "-" + dd;
+  }
+  function clearComputed(input) {
+    if (input.dataset && input.dataset.durationComputed) {
+      input.value = "";
+      delete input.dataset.durationComputed;
+    }
+  }
+  function markComputed(input) {
+    if (input.dataset) {
+      input.dataset.durationComputed = "1";
+    }
+  }
+  function watchManual(input) {
+    if (!input.addEventListener || input._durationWatch) {
+      return;
+    }
+    input._durationWatch = true;
+    input.addEventListener("input", function () {
+      if (input.dataset) {
+        delete input.dataset.durationComputed;
+      }
+    });
+  }
+  var expirySel = 'input[name="expiry_date"]';
+  var sel = document.querySelector(".expiry-duration");
+  if (!sel) {
+    return;
+  }
+  var form0 = sel.closest("form");
+  if (form0) {
+    var input0 = form0.querySelector(expirySel);
+    if (input0) {
+      watchManual(input0);
+    }
+  }
+  sel.addEventListener("change", function () {
+    var v = sel.value;
+    var form = sel.closest("form");
+    if (!form) {
+      return;
+    }
+    var fromInput = form.querySelector('input[name="expiry_from"]');
+    var input = form.querySelector(expirySel);
+    if (!input) {
+      return;
+    }
+    if (!v) {
+      clearComputed(input);
+      return;
+    }
+    var today = new Date();
+    var base = today;
+    if (fromInput && !fromInput.value) {
+      fromInput.value = fmt(today);
+    }
+    if (fromInput && fromInput.value) {
+      var parts = fromInput.value.split("-");
+      var parsed = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+      if (!isNaN(parsed.getTime())) {
+        base = parsed;
+      }
+    }
+    var target;
+    if (v.charAt(v.length - 1) === "m") {
+      target = addMonths(base, parseInt(v.slice(0, -1), 10));
+    } else {
+      target = new Date(base.getFullYear(), base.getMonth(), base.getDate() + parseInt(v, 10));
+    }
+    input.value = fmt(target);
+    markComputed(input);
+  });
+})();
+</script>
 {{template "chrome-bottom" .}}

@@ -465,6 +465,21 @@ func (s *Store) CreatePurchase(ctx context.Context, user *auth.User, in Purchase
 		if ln.PurchasePrice <= 0 {
 			return 0, "", fmt.Errorf("سطر %d: الكمية وسعر الشراء يجب أن يكونا أكبر من صفر", i+1)
 		}
+		// Fix-round-2 F2: a malformed ExpiryDate/ValidFrom stored verbatim
+		// blocks all later sales (sale blocking is a string compare), so
+		// both dates are validated as real YYYY-MM-DD calendar dates here
+		// in the store layer — this covers the form path and the JSON API
+		// path alike. Empty stays accepted (expiry is never required).
+		if strings.TrimSpace(ln.ExpiryDate) != "" {
+			if _, err := time.Parse("2006-01-02", strings.TrimSpace(ln.ExpiryDate)); err != nil {
+				return 0, "", fmt.Errorf("سطر %d: تاريخ الصلاحية غير صحيح — استخدم الصيغة YYYY-MM-DD", i+1)
+			}
+		}
+		if strings.TrimSpace(ln.ValidFrom) != "" {
+			if _, err := time.Parse("2006-01-02", strings.TrimSpace(ln.ValidFrom)); err != nil {
+				return 0, "", fmt.Errorf("سطر %d: تاريخ بداية الصلاحية غير صحيح — استخدم الصيغة YYYY-MM-DD", i+1)
+			}
+		}
 		lineTotal, err := money.MulQty(ln.PurchasePrice, ln.Qty)
 		if err != nil {
 			return 0, "", err
@@ -562,8 +577,23 @@ func (s *Store) CreatePurchase(ctx context.Context, user *auth.User, in Purchase
 					strings.TrimSpace(ln.ExpiryDate), strings.TrimSpace(ln.ValidFrom), int64(ln.PurchasePrice), in.VendorID, purchaseID, Today()); err != nil {
 					return err
 				}
-				if _, err := tx.Exec(`UPDATE Products SET BatchNumber=?,ExpiryDate=?,IsExpiryTracked=1 WHERE ProductID=?`,
-					strings.TrimSpace(ln.BatchNumber), strings.TrimSpace(ln.ExpiryDate), ln.ProductID); err != nil {
+				// Fix-round-2 F1: only overwrite the product fields the
+				// line actually supplies — a from-only or batch-only line
+				// must not wipe the product's existing ExpiryDate or
+				// BatchNumber with an empty value. IsExpiryTracked is
+				// still set whenever a batch/expiry/from is present.
+				sets := []string{"IsExpiryTracked=1"}
+				args := []any{}
+				if strings.TrimSpace(ln.BatchNumber) != "" {
+					sets = append(sets, "BatchNumber=?")
+					args = append(args, strings.TrimSpace(ln.BatchNumber))
+				}
+				if strings.TrimSpace(ln.ExpiryDate) != "" {
+					sets = append(sets, "ExpiryDate=?")
+					args = append(args, strings.TrimSpace(ln.ExpiryDate))
+				}
+				args = append(args, ln.ProductID)
+				if _, err := tx.Exec(`UPDATE Products SET `+strings.Join(sets, ",")+` WHERE ProductID=?`, args...); err != nil {
 					return err
 				}
 			}

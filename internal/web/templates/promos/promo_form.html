@@ -25,6 +25,7 @@
   <label>احصل على Y مجانًا — لـ «اشترِ واحصل مجانًا» <input name="free_y" value="{{index .Data "free_y"}}" placeholder="مثال: 1"></label>
   <label>يبدأ في <input name="start_at" placeholder="YYYY-MM-DD أو YYYY-MM-DD HH:MM:SS" value="{{if $o}}{{$o.StartAt}}{{end}}"></label>
   <label>ينتهي في <input name="end_at" placeholder="YYYY-MM-DD (يشمل اليوم كاملًا)" value="{{if $o}}{{$o.EndAt}}{{end}}"></label>
+  <label>مدة العرض <select class="offer-duration"><option value="">—</option><option value="7">أسبوع</option><option value="14">أسبوعين</option><option value="1m">شهر</option><option value="2m">شهرين</option><option value="3m">3 شهور</option><option value="6m">6 شهور</option><option value="12m">سنة</option><option value="24m">سنتين</option></select></label>
   <label><input type="checkbox" name="is_active" value="1" {{if $o}}{{if $o.IsActive}}checked{{end}}{{else}}checked{{end}}> مفعّل</label>
 
   <h2>الأهداف</h2>
@@ -94,6 +95,107 @@
   amount.addEventListener('input',update);
   document.querySelectorAll('select[name="target_id"]').forEach(function(s){s.addEventListener('change',update);});
   update();
+})();
+</script>
+<script>
+(function () {
+  function lastDay(y, m) {
+    return new Date(y, m + 1, 0).getDate();
+  }
+  function addMonths(d, n) {
+    var m = d.getMonth() + n;
+    var ny = d.getFullYear() + Math.floor(m / 12);
+    var nm = ((m % 12) + 12) % 12;
+    var day = Math.min(d.getDate(), lastDay(ny, nm));
+    return new Date(ny, nm, day);
+  }
+  function fmt(d) {
+    var mm = String(d.getMonth() + 1);
+    if (mm.length < 2) {
+      mm = "0" + mm;
+    }
+    var dd = String(d.getDate());
+    if (dd.length < 2) {
+      dd = "0" + dd;
+    }
+    return d.getFullYear() + "-" + mm + "-" + dd;
+  }
+  function clearComputed(input) {
+    if (input.dataset && input.dataset.durationComputed) {
+      input.value = "";
+      delete input.dataset.durationComputed;
+    }
+  }
+  function markComputed(input) {
+    if (input.dataset) {
+      input.dataset.durationComputed = "1";
+    }
+  }
+  function watchManual(input) {
+    if (!input.addEventListener || input._durationWatch) {
+      return;
+    }
+    input._durationWatch = true;
+    input.addEventListener("input", function () {
+      if (input.dataset) {
+        delete input.dataset.durationComputed;
+      }
+    });
+  }
+  var endSel = 'input[name="end_at"]';
+  var sel = document.querySelector(".offer-duration");
+  if (!sel) {
+    return;
+  }
+  var form0 = sel.closest("form");
+  if (form0) {
+    var end0 = form0.querySelector(endSel);
+    if (end0) {
+      watchManual(end0);
+    }
+  }
+  sel.addEventListener("change", function () {
+    var v = sel.value;
+    var form = sel.closest("form");
+    if (!form) {
+      return;
+    }
+    var startInput = form.querySelector('input[name="start_at"]');
+    var endInput = form.querySelector(endSel);
+    if (!endInput) {
+      return;
+    }
+    if (!v) {
+      clearComputed(endInput);
+      return;
+    }
+    var today = new Date();
+    var base = today;
+    if (startInput && !startInput.value) {
+      startInput.value = fmt(today);
+    }
+    if (startInput && startInput.value) {
+      var datePart = startInput.value.trim().split(" ")[0];
+      var parts = datePart.split("-");
+      var y = parseInt(parts[0], 10);
+      var m = parseInt(parts[1], 10);
+      var d = parseInt(parts[2], 10);
+      var parsed = new Date(y, m - 1, d);
+      if (parts.length === 3 && !isNaN(parsed.getTime()) && parsed.getFullYear() === y && parsed.getMonth() === m - 1 && parsed.getDate() === d) {
+        base = parsed;
+      } else {
+        return;
+      }
+    }
+    var target;
+    if (v.charAt(v.length - 1) === "m") {
+      target = addMonths(base, parseInt(v.slice(0, -1), 10));
+    } else {
+      target = new Date(base.getFullYear(), base.getMonth(), base.getDate() + parseInt(v, 10));
+    }
+    endInput.value = fmt(target);
+    markComputed(endInput);
+  });
 })();
 </script>
 {{template "chrome-bottom" .}}

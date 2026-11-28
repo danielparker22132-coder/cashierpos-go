@@ -86,24 +86,58 @@
     }
     return d.getFullYear() + "-" + mm + "-" + dd;
   }
+  function clearComputed(input) {
+    if (input.dataset && input.dataset.durationComputed) {
+      input.value = "";
+      delete input.dataset.durationComputed;
+    }
+  }
+  function markComputed(input) {
+    if (input.dataset) {
+      input.dataset.durationComputed = "1";
+    }
+  }
+  function watchManual(input) {
+    if (!input.addEventListener || input._durationWatch) {
+      return;
+    }
+    input._durationWatch = true;
+    input.addEventListener("input", function () {
+      if (input.dataset) {
+        delete input.dataset.durationComputed;
+      }
+    });
+  }
+  var expirySel = 'input[name="expiry"]';
   var sels = document.querySelectorAll(".expiry-duration");
   sels.forEach(function (sel) {
+    var row0 = sel.closest("tr");
+    if (row0) {
+      var input0 = row0.querySelector(expirySel);
+      if (input0) {
+        watchManual(input0);
+      }
+    }
     sel.addEventListener("change", function () {
       var v = sel.value;
-      if (!v) {
-        return;
-      }
       var row = sel.closest("tr");
       if (!row) {
         return;
       }
-      var input = row.querySelector('input[name="expiry"]');
+      var input = row.querySelector(expirySel);
       if (!input) {
+        return;
+      }
+      if (!v) {
+        clearComputed(input);
         return;
       }
       var today = new Date();
       var base = today;
       var fromInput = row.querySelector('input[name="valid_from"]');
+      if (fromInput && !fromInput.value) {
+        fromInput.value = fmt(today);
+      }
       if (fromInput && fromInput.value) {
         var parts = fromInput.value.split("-");
         var parsed = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
@@ -118,6 +152,7 @@
         target = new Date(base.getFullYear(), base.getMonth(), base.getDate() + parseInt(v, 10));
       }
       input.value = fmt(target);
+      markComputed(input);
     });
   });
 })();

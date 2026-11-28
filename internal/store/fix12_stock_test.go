@@ -29,15 +29,27 @@ func TestFix12_ExpiringProductsExcludesUntracked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tracked expired: %v", err)
 	}
-	// Untracked expired — must appear in neither list.
-	in = b1ProductInput("منتهي غير متتبع")
-	in.ExpiryDate = yesterday
-	in.ExpiryAlertDays = 7
-	in.IsExpiryTracked = false
-	untrackedExpired, err := s.CreateProduct(ctx, admin, in)
-	if err != nil {
-		t.Fatalf("create untracked expired: %v", err)
+	// Untracked expired — must appear in neither list. Created by
+	// direct SQL, not CreateProduct: since fix-round-2 M1 the service
+	// layer forces IsExpiryTracked=1 whenever an expiry is set, so an
+	// untracked row carrying an expiry can only exist as legacy/direct
+	// data — and the ExpiringProducts query must still exclude it.
+	insertUntracked := func(name, expiry string) int64 {
+		t.Helper()
+		res, err := s.DB.Exec(`INSERT INTO Products(ProductName,BuyPrice,RetailPrice,WholesalePrice,BulkPrice,
+			Quantity,MinQuantity,Unit,ExpiryDate,ExpiryAlertDays,IsExpiryTracked,IsActive,CreatedDate)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			name, 1000, 2000, 1500, 1200, 10000, 5000, "قطعة", expiry, 7, 0, 1, Today())
+		if err != nil {
+			t.Fatalf("insert untracked product %s: %v", name, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("untracked product %s id: %v", name, err)
+		}
+		return id
 	}
+	untrackedExpiredID := insertUntracked("منتهي غير متتبع", yesterday)
 	// Tracked expiring soon — must appear in both lists.
 	in = b1ProductInput("قريب متتبع")
 	in.ExpiryDate = soon
@@ -47,15 +59,10 @@ func TestFix12_ExpiringProductsExcludesUntracked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tracked soon: %v", err)
 	}
-	// Untracked expiring soon — must appear in neither list.
-	in = b1ProductInput("قريب غير متتبع")
-	in.ExpiryDate = soon
-	in.ExpiryAlertDays = 7
-	in.IsExpiryTracked = false
-	untrackedSoon, err := s.CreateProduct(ctx, admin, in)
-	if err != nil {
-		t.Fatalf("create untracked soon: %v", err)
-	}
+	// Untracked expiring soon — must appear in neither list (direct SQL,
+	// same reason as above: the service layer no longer lets an expiry
+	// be saved untracked).
+	untrackedSoonID := insertUntracked("قريب غير متتبع", soon)
 
 	// /products surface: ExpiringProducts.
 	exp, err := s.ExpiringProducts(ctx, admin)
@@ -72,11 +79,11 @@ func TestFix12_ExpiringProductsExcludesUntracked(t *testing.T) {
 	if !seen[trackedSoon.ID] {
 		t.Fatalf("tracked near-expiry product %d missing from ExpiringProducts: %+v", trackedSoon.ID, exp)
 	}
-	if seen[untrackedExpired.ID] {
-		t.Fatalf("untracked expired product %d must NOT appear in ExpiringProducts", untrackedExpired.ID)
+	if seen[untrackedExpiredID] {
+		t.Fatalf("untracked expired product %d must NOT appear in ExpiringProducts", untrackedExpiredID)
 	}
-	if seen[untrackedSoon.ID] {
-		t.Fatalf("untracked near-expiry product %d must NOT appear in ExpiringProducts", untrackedSoon.ID)
+	if seen[untrackedSoonID] {
+		t.Fatalf("untracked near-expiry product %d must NOT appear in ExpiringProducts", untrackedSoonID)
 	}
 
 	// Hub surface: the exact H-6 counts from internal/web/routes.go.
